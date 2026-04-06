@@ -1,0 +1,16 @@
+USE chat_app;
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS email VARCHAR(128) NOT NULL DEFAULT '' AFTER username,
+    ADD COLUMN IF NOT EXISTS updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at;
+
+UPDATE users
+SET email = CONCAT(username, '@local.invalid')
+WHERE email = '' OR email IS NULL;
+
+ALTER TABLE users
+    ADD UNIQUE KEY uk_users_email (email);
+
+ALTER TABLE conversations
+    ADD COLUMN IF NOT EXISTS model VARCHAR(128) NOT NULL DEFAULT '' AFTER title,
+    ADD COLUMN IF NOT EXISTS system_prompt TEXT NULL AFTER model;

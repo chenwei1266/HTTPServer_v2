@@ -1,0 +1,1668 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChatUI</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-primary: #0f0f10;
+  --bg-secondary: #1a1a1d;
+  --bg-sidebar: #111113;
+  --bg-input: #1e1e22;
+  --bg-hover: #25252a;
+  --bg-message-user: #2563eb;
+  --bg-code: #161618;
+  --border: #2a2a2f;
+  --border-subtle: #222226;
+  --text-primary: #ececec;
+  --text-secondary: #9b9ba4;
+  --text-muted: #5c5c6b;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: rgba(37,99,235,0.15);
+  --green: #22c55e;
+  --red: #ef4444;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.4);
+  --font-sans: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --sidebar-w: 260px;
+  --transition: all 0.18s ease;
+}
+
+[data-theme="light"] {
+  --bg-primary: #f5f5f7;
+  --bg-secondary: #ffffff;
+  --bg-sidebar: #f0f0f3;
+  --bg-input: #ffffff;
+  --bg-hover: #e8e8ed;
+  --bg-message-user: #2563eb;
+  --bg-code: #f3f4f6;
+  --border: #d1d1d6;
+  --border-subtle: #e5e5ea;
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-muted: #aeaeb2;
+  --shadow: 0 2px 16px rgba(0,0,0,0.1);
+}
+
+html, body { height: 100%; font-family: var(--font-sans); background: var(--bg-primary); color: var(--text-primary); overflow: hidden; }
+
+/* ══════════════════════════════════════
+   AUTH PAGE
+══════════════════════════════════════ */
+.auth-page {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: stretch;
+  background: var(--bg-primary);
+  transition: opacity 0.3s ease;
+}
+.auth-page.hidden { opacity: 0; pointer-events: none; }
+
+/* Left panel - branding */
+.auth-left {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  background: linear-gradient(145deg, #0a0a14 0%, #0f0f1a 40%, #111128 100%);
+  padding: 60px 40px; position: relative; overflow: hidden;
+}
+.auth-left::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(ellipse 60% 50% at 50% 50%, rgba(37,99,235,0.15) 0%, transparent 70%);
+}
+.auth-left::after {
+  content: ''; position: absolute;
+  width: 500px; height: 500px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(124,58,237,0.08) 0%, transparent 70%);
+  top: -100px; right: -100px;
+}
+.auth-brand { position: relative; z-index: 1; text-align: center; }
+.auth-brand-logo {
+  width: 72px; height: 72px; border-radius: 20px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto 24px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 16px 48px rgba(37,99,235,0.35);
+}
+.auth-brand-logo svg { width: 38px; height: 38px; fill: white; }
+.auth-brand h1 { font-size: 32px; font-weight: 700; color: #fff; margin-bottom: 10px; letter-spacing: -0.5px; }
+.auth-brand p { font-size: 15px; color: rgba(255,255,255,0.45); max-width: 320px; line-height: 1.6; }
+
+.auth-features { position: relative; z-index: 1; margin-top: 52px; width: 100%; max-width: 340px; }
+.auth-feature {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px; border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: 10px;
+}
+.auth-feature-icon {
+  width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 16px;
+}
+.auth-feature-text strong { display: block; font-size: 13px; color: rgba(255,255,255,0.85); margin-bottom: 2px; }
+.auth-feature-text span { font-size: 12px; color: rgba(255,255,255,0.35); }
+
+/* Right panel - form */
+.auth-right {
+  width: 440px; flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-subtle);
+  display: flex; flex-direction: column;
+  overflow-y: auto;
+}
+.auth-right::-webkit-scrollbar { width: 4px; }
+.auth-right::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.auth-form-wrap {
+  flex: 1; display: flex; flex-direction: column;
+  justify-content: center; padding: 48px 40px;
+  min-height: 100%;
+}
+
+.auth-tabs { display: flex; background: var(--bg-hover); border-radius: var(--radius-sm); padding: 3px; margin-bottom: 32px; }
+.auth-tab {
+  flex: 1; padding: 8px; border-radius: 7px; border: none; cursor: pointer;
+  font-size: 13.5px; font-weight: 500; font-family: var(--font-sans);
+  background: transparent; color: var(--text-muted); transition: var(--transition);
+}
+.auth-tab.active { background: var(--bg-secondary); color: var(--text-primary); box-shadow: 0 1px 6px rgba(0,0,0,0.25); }
+
+.auth-form { display: none; }
+.auth-form.active { display: block; }
+
+.auth-form h2 { font-size: 22px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
+.auth-form .auth-sub { font-size: 13.5px; color: var(--text-secondary); margin-bottom: 28px; }
+
+.form-group { margin-bottom: 18px; }
+.form-label { display: block; font-size: 13px; font-weight: 500; color: var(--text-secondary); margin-bottom: 7px; }
+.form-input {
+  width: 100%; padding: 10px 13px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--bg-input);
+  color: var(--text-primary); font-size: 14px; font-family: var(--font-sans);
+  outline: none; transition: var(--transition);
+}
+.form-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.form-input::placeholder { color: var(--text-muted); }
+.form-input.error { border-color: var(--red); }
+
+.input-with-icon { position: relative; }
+.input-with-icon .form-input { padding-right: 42px; }
+.input-eye {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer; color: var(--text-muted);
+  display: flex; align-items: center; padding: 4px; transition: color 0.15s;
+}
+.input-eye:hover { color: var(--text-primary); }
+.input-eye svg { width: 16px; height: 16px; }
+
+.form-error { font-size: 12px; color: var(--red); margin-top: 5px; display: none; }
+.form-error.visible { display: block; }
+
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.password-strength { margin-top: 8px; }
+.strength-bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-bottom: 4px; }
+.strength-fill { height: 100%; border-radius: 2px; transition: width 0.3s, background 0.3s; width: 0; }
+.strength-label { font-size: 11px; color: var(--text-muted); }
+
+.form-checkbox { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 22px; }
+.form-checkbox input[type=checkbox] { width: 16px; height: 16px; margin-top: 1px; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+.form-checkbox label { font-size: 13px; color: var(--text-secondary); cursor: pointer; line-height: 1.5; }
+.form-checkbox a { color: var(--accent); text-decoration: none; }
+.form-checkbox a:hover { text-decoration: underline; }
+
+.auth-submit {
+  width: 100%; padding: 11px; border-radius: var(--radius-sm);
+  border: none; background: var(--accent); color: white;
+  font-size: 14.5px; font-weight: 600; font-family: var(--font-sans);
+  cursor: pointer; transition: var(--transition);
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.auth-submit:hover { background: var(--accent-hover); transform: translateY(-1px); box-shadow: 0 4px 16px rgba(37,99,235,0.4); }
+.auth-submit:active { transform: translateY(0); }
+.auth-submit:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+.auth-divider { display: flex; align-items: center; gap: 12px; margin: 22px 0; }
+.auth-divider span { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--border-subtle); }
+
+.auth-oauth { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.oauth-btn {
+  padding: 9px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--bg-hover);
+  cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 7px;
+  font-size: 13px; font-family: var(--font-sans); color: var(--text-secondary);
+  transition: var(--transition);
+}
+.oauth-btn:hover { border-color: var(--text-muted); color: var(--text-primary); background: var(--bg-primary); }
+.oauth-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+.oauth-btn img { width: 16px; height: 16px; flex-shrink: 0; }
+
+.auth-switch { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 24px; }
+.auth-switch a { color: var(--accent); text-decoration: none; cursor: pointer; font-weight: 500; }
+.auth-switch a:hover { text-decoration: underline; }
+
+.auth-theme-btn {
+  position: absolute; top: 16px; right: 16px;
+  width: 36px; height: 36px; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--bg-hover);
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  color: var(--text-secondary); transition: var(--transition);
+}
+.auth-theme-btn:hover { background: var(--bg-primary); color: var(--text-primary); }
+.auth-theme-btn svg { width: 16px; height: 16px; }
+
+/* Spinner */
+.spinner {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ══════════════════════════════════════
+   MAIN APP
+══════════════════════════════════════ */
+.app { display: flex; height: 100vh; }
+
+/* ── Sidebar ── */
+.sidebar {
+  width: var(--sidebar-w); flex-shrink: 0;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
+  display: flex; flex-direction: column;
+  transition: var(--transition); overflow: hidden;
+}
+.sidebar.collapsed { width: 0; border-right: none; }
+
+.sidebar-header {
+  padding: 14px 12px;
+  display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px solid var(--border-subtle); flex-shrink: 0;
+}
+.logo { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; text-decoration: none; }
+.logo-icon {
+  width: 28px; height: 28px; border-radius: 7px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.logo-icon svg { width: 16px; height: 16px; fill: white; }
+.logo-text { font-size: 14px; font-weight: 700; color: var(--text-primary); white-space: nowrap; }
+
+.icon-btn {
+  width: 32px; height: 32px; border-radius: var(--radius-xs);
+  border: none; background: transparent; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-secondary); transition: var(--transition); flex-shrink: 0;
+}
+.icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.icon-btn svg { width: 16px; height: 16px; }
+
+.new-chat-btn {
+  margin: 10px 10px 6px; padding: 8px 12px; border-radius: var(--radius-sm);
+  background: var(--bg-hover); border: 1px solid var(--border-subtle);
+  cursor: pointer; display: flex; align-items: center; gap: 8px;
+  color: var(--text-secondary); font-size: 13px; font-family: var(--font-sans);
+  transition: var(--transition); text-align: left; white-space: nowrap;
+}
+.new-chat-btn:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.new-chat-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+
+.sidebar-section { padding: 4px 8px 2px; }
+.sidebar-label { font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; padding: 6px 4px 4px; }
+
+.chat-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
+.chat-list::-webkit-scrollbar { width: 4px; }
+.chat-list::-webkit-scrollbar-track { background: transparent; }
+.chat-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.chat-item {
+  padding: 7px 10px; border-radius: var(--radius-xs);
+  cursor: pointer; display: flex; align-items: center; gap: 6px;
+  transition: var(--transition); color: var(--text-secondary);
+  font-size: 13px; white-space: nowrap; overflow: hidden;
+}
+.chat-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.chat-item.active { background: var(--accent-soft); color: var(--accent); }
+.chat-item svg { width: 14px; height: 14px; flex-shrink: 0; opacity: 0.6; }
+.chat-item span { overflow: hidden; text-overflow: ellipsis; }
+
+.sidebar-footer {
+  padding: 8px; border-top: 1px solid var(--border-subtle); flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 2px;
+}
+
+/* User info in sidebar footer */
+.sidebar-user {
+  display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+  border-radius: var(--radius-xs); cursor: pointer; transition: var(--transition);
+  margin-bottom: 4px;
+}
+.sidebar-user:hover { background: var(--bg-hover); }
+.user-avatar {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: white;
+}
+.user-info { flex: 1; min-width: 0; }
+.user-name { font-size: 13px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.user-email { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.sidebar-footer-btn {
+  padding: 8px 10px; border-radius: var(--radius-xs);
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  transition: var(--transition); color: var(--text-secondary); font-size: 13px;
+  background: transparent; border: none; font-family: var(--font-sans); text-align: left;
+}
+.sidebar-footer-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.sidebar-footer-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+.sidebar-footer-btn.danger:hover { background: rgba(239,68,68,0.1); color: var(--red); }
+
+/* ── Main ── */
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg-primary); }
+
+/* ── Topbar ── */
+.topbar {
+  height: 52px; flex-shrink: 0;
+  display: flex; align-items: center; gap: 8px; padding: 0 14px;
+  border-bottom: 1px solid var(--border-subtle); background: var(--bg-primary);
+}
+.topbar-title { font-size: 14px; font-weight: 500; color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.model-selector {
+  display: flex; align-items: center; gap: 6px; padding: 5px 10px;
+  border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--bg-input); cursor: pointer; transition: var(--transition);
+  font-size: 12.5px; color: var(--text-primary); font-family: var(--font-sans);
+  max-width: 200px;
+}
+.model-selector:hover { border-color: var(--accent); background: var(--bg-hover); }
+.model-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.model-selector svg { width: 12px; height: 12px; color: var(--text-muted); flex-shrink: 0; }
+
+/* ── Messages Area ── */
+.messages-area { flex: 1; overflow-y: auto; position: relative; }
+.messages-area::-webkit-scrollbar { width: 6px; }
+.messages-area::-webkit-scrollbar-track { background: transparent; }
+.messages-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.messages-container { max-width: 760px; margin: 0 auto; padding: 24px 16px 16px; }
+
+/* ── Welcome ── */
+.welcome { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 60vh; text-align: center; padding: 40px 20px; }
+.welcome-logo {
+  width: 60px; height: 60px; border-radius: 16px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  display: flex; align-items: center; justify-content: center; margin-bottom: 20px;
+  box-shadow: 0 8px 32px rgba(37,99,235,0.3);
+}
+.welcome-logo svg { width: 32px; height: 32px; fill: white; }
+.welcome h1 { font-size: 26px; font-weight: 700; color: var(--text-primary); margin-bottom: 8px; }
+.welcome p { font-size: 15px; color: var(--text-secondary); margin-bottom: 32px; }
+.suggestions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 500px; width: 100%; }
+.suggestion-card {
+  padding: 13px 15px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--bg-secondary); cursor: pointer; text-align: left;
+  transition: var(--transition); font-family: var(--font-sans); color: var(--text-secondary); font-size: 13px; line-height: 1.4;
+}
+.suggestion-card:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.suggestion-icon { font-size: 18px; margin-bottom: 6px; }
+
+/* ── Messages ── */
+.message-group { margin-bottom: 24px; animation: fadeUp 0.22s ease; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+.message-row { display: flex; gap: 12px; align-items: flex-start; }
+.message-row.user { flex-direction: row-reverse; }
+.avatar { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; margin-top: 1px; }
+.avatar.assistant { background: linear-gradient(135deg, #2563eb, #7c3aed); color: white; }
+.avatar.user { background: var(--bg-hover); color: var(--text-secondary); }
+.avatar svg { width: 16px; height: 16px; }
+.message-content { flex: 1; min-width: 0; }
+.message-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.message-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.message-time { font-size: 11px; color: var(--text-muted); }
+.message-bubble { display: inline-block; max-width: 100%; padding: 10px 14px; border-radius: var(--radius); font-size: 14.5px; line-height: 1.65; word-break: break-word; }
+.message-row.user .message-content { display: flex; flex-direction: column; align-items: flex-end; }
+.message-row.user .message-header { flex-direction: row-reverse; }
+.message-row.user .message-bubble { background: var(--bg-message-user); color: white; border-radius: var(--radius) var(--radius-xs) var(--radius) var(--radius); }
+.message-row.assistant .message-bubble { background: transparent; color: var(--text-primary); padding: 0; }
+
+/* Markdown */
+.md-content { line-height: 1.7; }
+.md-content p { margin-bottom: 12px; }
+.md-content p:last-child { margin-bottom: 0; }
+.md-content h1,.md-content h2,.md-content h3,.md-content h4 { font-weight: 600; margin: 18px 0 10px; color: var(--text-primary); }
+.md-content h1 { font-size: 20px; } .md-content h2 { font-size: 17px; } .md-content h3 { font-size: 15px; }
+.md-content ul,.md-content ol { padding-left: 22px; margin-bottom: 12px; }
+.md-content li { margin-bottom: 5px; }
+.md-content code { font-family: var(--font-mono); font-size: 13px; background: var(--bg-code); border: 1px solid var(--border-subtle); padding: 1px 6px; border-radius: 4px; color: #e879f9; }
+.md-content pre { background: var(--bg-code); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; margin: 14px 0; }
+.md-content pre code { background: none; border: none; padding: 0; color: inherit; font-size: 13px; }
+.md-content blockquote { border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0; color: var(--text-secondary); background: var(--accent-soft); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; }
+.md-content table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13.5px; }
+.md-content th { padding: 8px 12px; border: 1px solid var(--border); background: var(--bg-hover); font-weight: 600; text-align: left; }
+.md-content td { padding: 8px 12px; border: 1px solid var(--border); }
+.md-content a { color: var(--accent); text-decoration: none; }
+.md-content a:hover { text-decoration: underline; }
+.md-content hr { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
+
+.code-block-wrapper { position: relative; }
+.code-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.03); }
+.code-lang { font-size: 11.5px; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em; }
+.copy-code-btn { padding: 3px 9px; border-radius: 5px; border: 1px solid var(--border); background: transparent; cursor: pointer; font-size: 11px; font-family: var(--font-sans); color: var(--text-muted); transition: var(--transition); display: flex; align-items: center; gap: 4px; }
+.copy-code-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.copy-code-btn svg { width: 11px; height: 11px; }
+pre code.hljs { padding: 14px 16px !important; display: block; }
+
+.message-actions { display: flex; align-items: center; gap: 2px; margin-top: 6px; opacity: 0; transition: opacity 0.15s; }
+.message-group:hover .message-actions { opacity: 1; }
+.action-btn { width: 28px; height: 28px; border-radius: var(--radius-xs); border: none; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text-muted); transition: var(--transition); }
+.action-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.action-btn svg { width: 13px; height: 13px; }
+
+.thinking { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 13.5px; padding: 4px 0; }
+.thinking-dots { display: flex; gap: 4px; }
+.thinking-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: bounce 1.2s ease-in-out infinite; }
+.thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce { 0%,80%,100% { transform: scale(0.8); opacity: 0.4; } 40% { transform: scale(1.2); opacity: 1; } }
+.streaming-cursor { display: inline-block; width: 2px; height: 16px; background: var(--accent); margin-left: 2px; vertical-align: text-bottom; animation: blink 0.8s step-end infinite; }
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* ── Input ── */
+.input-area { padding: 12px 16px 16px; flex-shrink: 0; }
+.input-wrapper { max-width: 760px; margin: 0 auto; }
+.input-box { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; transition: border-color 0.15s; box-shadow: 0 2px 12px rgba(0,0,0,0.2); }
+.input-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), 0 2px 12px rgba(0,0,0,0.2); }
+.input-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px 0; }
+.file-chip { display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: var(--bg-hover); border-radius: 20px; font-size: 12px; color: var(--text-secondary); }
+.file-chip svg { width: 12px; height: 12px; }
+.file-chip-remove { cursor: pointer; opacity: 0.6; background: none; border: none; color: inherit; display: flex; align-items: center; }
+.file-chip-remove:hover { opacity: 1; }
+.textarea-wrap { padding: 12px 14px; }
+#prompt-input { width: 100%; background: transparent; border: none; outline: none; resize: none; font-family: var(--font-sans); font-size: 14.5px; color: var(--text-primary); line-height: 1.6; min-height: 24px; max-height: 220px; overflow-y: auto; }
+#prompt-input::placeholder { color: var(--text-muted); }
+#prompt-input::-webkit-scrollbar { width: 3px; }
+#prompt-input::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.input-toolbar { display: flex; align-items: center; gap: 4px; padding: 6px 10px 10px; }
+.toolbar-left { display: flex; align-items: center; gap: 2px; flex: 1; }
+.toolbar-btn { padding: 5px 8px; border-radius: var(--radius-xs); border: none; background: transparent; cursor: pointer; color: var(--text-muted); display: flex; align-items: center; gap: 5px; font-size: 12px; font-family: var(--font-sans); transition: var(--transition); }
+.toolbar-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.toolbar-btn svg { width: 15px; height: 15px; }
+.send-btn { width: 34px; height: 34px; border-radius: 9px; border: none; cursor: pointer; transition: var(--transition); display: flex; align-items: center; justify-content: center; background: var(--accent); color: white; }
+.send-btn:hover { background: var(--accent-hover); transform: scale(1.05); }
+.send-btn:disabled { background: var(--bg-hover); color: var(--text-muted); cursor: not-allowed; transform: none; }
+.send-btn svg { width: 16px; height: 16px; }
+.send-btn.stop { background: var(--red); }
+.send-btn.stop:hover { background: #dc2626; }
+.input-hint { text-align: center; font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+
+/* ── Modal ── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 100; display: flex; align-items: center; justify-content: center; animation: fadeIn 0.15s ease; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+.modal { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); width: 420px; max-width: calc(100vw - 32px); box-shadow: var(--shadow); animation: slideIn 0.18s ease; }
+@keyframes slideIn { from { transform: translateY(-12px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.modal-header { padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: space-between; }
+.modal-header h3 { font-size: 15px; font-weight: 600; }
+.modal-body { padding: 12px; max-height: 360px; overflow-y: auto; }
+.modal-search { position: relative; margin-bottom: 8px; }
+.modal-search input { width: 100%; padding: 8px 12px 8px 34px; border-radius: var(--radius-xs); border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); font-size: 13.5px; font-family: var(--font-sans); outline: none; }
+.modal-search input:focus { border-color: var(--accent); }
+.modal-search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--text-muted); }
+.model-option { padding: 10px 12px; border-radius: var(--radius-xs); cursor: pointer; display: flex; align-items: center; gap: 10px; transition: var(--transition); }
+.model-option:hover { background: var(--bg-hover); }
+.model-option.selected { background: var(--accent-soft); }
+.model-option-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.model-option-info { flex: 1; min-width: 0; }
+.model-option-name { font-size: 13.5px; font-weight: 500; color: var(--text-primary); }
+.model-option-desc { font-size: 11.5px; color: var(--text-muted); margin-top: 1px; }
+.model-check { width: 16px; height: 16px; color: var(--accent); flex-shrink: 0; }
+
+/* ── Settings Panel ── */
+.settings-panel { position: fixed; right: 0; top: 0; bottom: 0; width: 320px; background: var(--bg-sidebar); border-left: 1px solid var(--border-subtle); z-index: 50; transform: translateX(100%); transition: transform 0.22s ease; display: flex; flex-direction: column; }
+.settings-panel.open { transform: translateX(0); }
+.settings-header { padding: 16px; border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; gap: 10px; }
+.settings-header h2 { font-size: 15px; font-weight: 600; flex: 1; }
+.settings-body { flex: 1; overflow-y: auto; padding: 16px; }
+.settings-section { margin-bottom: 24px; }
+.settings-section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 12px; }
+.settings-row { margin-bottom: 14px; }
+.settings-label { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; display: block; }
+.settings-input { width: 100%; padding: 7px 11px; border-radius: var(--radius-xs); border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary); font-size: 13px; font-family: var(--font-sans); outline: none; }
+.settings-input:focus { border-color: var(--accent); }
+.settings-range { width: 100%; accent-color: var(--accent); }
+.settings-toggle { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
+.settings-toggle:last-child { border-bottom: none; }
+.toggle-label { font-size: 13.5px; color: var(--text-primary); }
+.toggle { width: 38px; height: 22px; border-radius: 11px; background: var(--bg-hover); border: none; cursor: pointer; position: relative; transition: background 0.2s; flex-shrink: 0; }
+.toggle.on { background: var(--accent); }
+.toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+.toggle.on::after { transform: translateX(16px); }
+
+/* ── Toast ── */
+.toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
+.toast { padding: 10px 16px; border-radius: var(--radius-sm); background: var(--bg-secondary); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 13.5px; color: var(--text-primary); display: flex; align-items: center; gap: 8px; animation: slideInRight 0.2s ease; max-width: 300px; }
+@keyframes slideInRight { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+.toast.success .toast-dot { background: var(--green); }
+.toast.error .toast-dot { background: var(--red); }
+.toast-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+
+.scroll-to-bottom { position: sticky; bottom: 16px; float: right; margin-right: 16px; width: 32px; height: 32px; border-radius: 50%; background: var(--bg-secondary); border: 1px solid var(--border); cursor: pointer; display: none; align-items: center; justify-content: center; color: var(--text-secondary); box-shadow: var(--shadow); transition: var(--transition); }
+.scroll-to-bottom.visible { display: flex; }
+.scroll-to-bottom:hover { background: var(--bg-hover); color: var(--text-primary); }
+.scroll-to-bottom svg { width: 14px; height: 14px; }
+
+#file-input { display: none; }
+
+/* ── User dropdown ── */
+.user-dropdown {
+  position: absolute; bottom: 100%; left: 0; right: 0; margin: 4px 8px;
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow); overflow: hidden;
+  display: none; z-index: 10;
+}
+.user-dropdown.open { display: block; }
+.dropdown-item {
+  padding: 9px 13px; display: flex; align-items: center; gap: 9px;
+  cursor: pointer; font-size: 13px; color: var(--text-secondary); transition: var(--transition);
+  background: none; border: none; width: 100%; font-family: var(--font-sans); text-align: left;
+}
+.dropdown-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.dropdown-item.danger:hover { background: rgba(239,68,68,0.1); color: var(--red); }
+.dropdown-item svg { width: 14px; height: 14px; flex-shrink: 0; }
+.dropdown-divider { height: 1px; background: var(--border-subtle); margin: 4px 0; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .auth-left { display: none; }
+  .auth-right { width: 100%; border-left: none; }
+  .auth-form-wrap { padding: 32px 24px; }
+}
+@media (max-width: 640px) {
+  .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 40; transform: translateX(-100%); }
+  .sidebar:not(.collapsed) { transform: translateX(0); }
+  .sidebar.collapsed { transform: translateX(-100%); width: var(--sidebar-w); }
+  .suggestions { grid-template-columns: 1fr; }
+  .model-selector { max-width: 140px; }
+  .settings-panel { width: 100%; }
+  .toast-container { bottom: 80px; right: 12px; left: 12px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ══ AUTH PAGE ══ -->
+<div class="auth-page" id="auth-page">
+  <!-- Left Branding -->
+  <div class="auth-left">
+    <div class="auth-brand">
+      <div class="auth-brand-logo">
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+      </div>
+      <h1>ChatUI</h1>
+      <p>强大的 AI 对话平台，支持多种主流模型，让 AI 触手可及</p>
+    </div>
+    <div class="auth-features">
+      <div class="auth-feature">
+        <div class="auth-feature-icon" style="background:rgba(37,99,235,0.15)">🤖</div>
+        <div class="auth-feature-text">
+          <strong>多模型支持</strong>
+          <span>Claude、GPT-4、Gemini 等主流模型</span>
+        </div>
+      </div>
+      <div class="auth-feature">
+        <div class="auth-feature-icon" style="background:rgba(124,58,237,0.15)">⚡</div>
+        <div class="auth-feature-text">
+          <strong>流式响应</strong>
+          <span>实时流式输出，对话更流畅自然</span>
+        </div>
+      </div>
+      <div class="auth-feature">
+        <div class="auth-feature-icon" style="background:rgba(34,197,94,0.15)">🔒</div>
+        <div class="auth-feature-text">
+          <strong>安全私密</strong>
+          <span>数据加密存储，保护您的隐私</span>
+        </div>
+      </div>
+      <div class="auth-feature">
+        <div class="auth-feature-icon" style="background:rgba(245,158,11,0.15)">📎</div>
+        <div class="auth-feature-text">
+          <strong>文件上传</strong>
+          <span>支持上传文件与 AI 深度交互</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Form -->
+  <div class="auth-right">
+    <div class="auth-form-wrap">
+      <!-- Theme toggle inside auth -->
+      <button class="auth-theme-btn" style="position:relative;align-self:flex-end;margin-bottom:8px" onclick="toggleTheme()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="auth-theme-icon"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+
+      <!-- Tabs -->
+      <div class="auth-tabs">
+        <button class="auth-tab active" id="tab-login" onclick="switchTab('login')">登录</button>
+        <button class="auth-tab" id="tab-register" onclick="switchTab('register')">注册</button>
+      </div>
+
+      <!-- Login Form -->
+      <div class="auth-form active" id="form-login">
+        <h2>欢迎回来</h2>
+        <p class="auth-sub">登录您的 ChatUI 账号继续对话</p>
+
+        <div class="form-group">
+          <label class="form-label">邮箱地址</label>
+          <input class="form-input" type="email" id="login-email" placeholder="your@email.com" autocomplete="email">
+          <div class="form-error" id="login-email-err">请输入有效的邮箱地址</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">密码</label>
+          <div class="input-with-icon">
+            <input class="form-input" type="password" id="login-password" placeholder="••••••••" autocomplete="current-password">
+            <button class="input-eye" onclick="togglePwd('login-password', this)" tabindex="-1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <div class="form-error" id="login-pwd-err">密码不能为空</div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:22px">
+          <label style="display:flex;align-items:center;gap:7px;font-size:13px;color:var(--text-secondary);cursor:pointer">
+            <input type="checkbox" id="remember-me" style="accent-color:var(--accent)"> 记住我
+          </label>
+          <a href="#" style="font-size:13px;color:var(--accent);text-decoration:none" onclick="showForgot()">忘记密码？</a>
+        </div>
+
+        <button class="auth-submit" id="login-btn" onclick="handleLogin()">
+          登录
+        </button>
+
+        <div class="auth-divider"><span>或通过以下方式登录</span></div>
+
+        <div class="auth-oauth">
+          <button class="oauth-btn" onclick="oauthLogin('Google')">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+            Google
+          </button>
+          <button class="oauth-btn" onclick="oauthLogin('GitHub')">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2z"/></svg>
+            GitHub
+          </button>
+        </div>
+
+        <div class="auth-switch">还没有账号？<a onclick="switchTab('register')">立即注册</a></div>
+      </div>
+
+      <!-- Register Form -->
+      <div class="auth-form" id="form-register">
+        <h2>创建账号</h2>
+        <p class="auth-sub">加入 ChatUI，开始与 AI 对话</p>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">姓名</label>
+            <input class="form-input" type="text" id="reg-name" placeholder="张三" autocomplete="given-name">
+            <div class="form-error" id="reg-name-err">请输入姓名</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">用户名</label>
+            <input class="form-input" type="text" id="reg-username" placeholder="zhangsan" autocomplete="username">
+            <div class="form-error" id="reg-username-err">用户名至少 3 个字符</div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">邮箱地址</label>
+          <input class="form-input" type="email" id="reg-email" placeholder="your@email.com" autocomplete="email">
+          <div class="form-error" id="reg-email-err">请输入有效的邮箱地址</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">密码</label>
+          <div class="input-with-icon">
+            <input class="form-input" type="password" id="reg-password" placeholder="至少 8 位字符" oninput="checkStrength(this.value)" autocomplete="new-password">
+            <button class="input-eye" onclick="togglePwd('reg-password', this)" tabindex="-1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <div class="password-strength">
+            <div class="strength-bar"><div class="strength-fill" id="strength-fill"></div></div>
+            <div class="strength-label" id="strength-label"></div>
+          </div>
+          <div class="form-error" id="reg-pwd-err">密码至少 8 位字符</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">确认密码</label>
+          <div class="input-with-icon">
+            <input class="form-input" type="password" id="reg-confirm" placeholder="再次输入密码" autocomplete="new-password">
+            <button class="input-eye" onclick="togglePwd('reg-confirm', this)" tabindex="-1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <div class="form-error" id="reg-confirm-err">两次密码不一致</div>
+        </div>
+
+        <div class="form-checkbox">
+          <input type="checkbox" id="agree-terms">
+          <label for="agree-terms">我已阅读并同意 <a href="#">服务条款</a> 和 <a href="#">隐私政策</a></label>
+        </div>
+        <div class="form-error" id="reg-terms-err" style="margin-top:-12px;margin-bottom:14px">请同意服务条款</div>
+
+        <button class="auth-submit" id="register-btn" onclick="handleRegister()">
+          创建账号
+        </button>
+
+        <div class="auth-divider"><span>或通过以下方式注册</span></div>
+
+        <div class="auth-oauth">
+          <button class="oauth-btn" onclick="oauthLogin('Google')">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+            Google
+          </button>
+          <button class="oauth-btn" onclick="oauthLogin('GitHub')">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2z"/></svg>
+            GitHub
+          </button>
+        </div>
+
+        <div class="auth-switch">已有账号？<a onclick="switchTab('login')">立即登录</a></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MAIN APP ══ -->
+<div class="app" id="app" style="display:none">
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <a class="logo" href="#">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+        </div>
+        <span class="logo-text">ChatUI</span>
+      </a>
+      <button class="icon-btn" onclick="newChat()" title="新建对话">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
+
+    <button class="new-chat-btn" onclick="newChat()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+      新建对话
+    </button>
+
+    <div class="chat-list" id="chat-list"></div>
+
+    <div class="sidebar-footer" style="position:relative">
+      <!-- User Dropdown -->
+      <div class="user-dropdown" id="user-dropdown">
+        <button class="dropdown-item" onclick="toggleSettings();closeDropdown()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+          设置
+        </button>
+        <button class="dropdown-item" onclick="toggleTheme();closeDropdown()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="theme-icon-dd"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          切换主题
+        </button>
+        <div class="dropdown-divider"></div>
+        <button class="dropdown-item danger" onclick="handleLogout()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+          退出登录
+        </button>
+      </div>
+
+      <!-- User Info -->
+      <div class="sidebar-user" onclick="toggleDropdown()" id="sidebar-user">
+        <div class="user-avatar" id="user-avatar-sidebar">U</div>
+        <div class="user-info">
+          <div class="user-name" id="sidebar-username">用户</div>
+          <div class="user-email" id="sidebar-email">user@example.com</div>
+        </div>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;color:var(--text-muted);flex-shrink:0"><path d="M18 15l-6-6-6 6"/></svg>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main">
+    <div class="topbar">
+      <button class="icon-btn" onclick="toggleSidebar()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+      </button>
+      <div class="topbar-title" id="topbar-title">新对话</div>
+      <button class="model-selector" onclick="openModelModal()" id="model-selector-btn">
+        <span class="model-dot"></span>
+        <span class="model-name" id="current-model-name">Qwen3-Coder-Next</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <button class="icon-btn" onclick="toggleSettings()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+      </button>
+    </div>
+
+    <div class="messages-area" id="messages-area">
+      <div class="messages-container" id="messages-container">
+        <div class="welcome" id="welcome-screen">
+          <div class="welcome-logo">
+            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+          </div>
+          <h1 id="welcome-title">今天我能帮你做什么？</h1>
+          <p>使用 <strong>ChatUI</strong> 开始与 AI 对话</p>
+          <div class="suggestions">
+            <button class="suggestion-card" onclick="useSuggestion('帮我写一首关于秋天的现代诗')">
+              <div class="suggestion-icon">✍️</div>帮我写一首关于秋天的现代诗
+            </button>
+            <button class="suggestion-card" onclick="useSuggestion('解释一下量子纠缠是什么')">
+              <div class="suggestion-icon">🔬</div>解释一下量子纠缠是什么
+            </button>
+            <button class="suggestion-card" onclick="useSuggestion('用 Python 写一个快速排序算法')">
+              <div class="suggestion-icon">💻</div>用 Python 写一个快速排序算法
+            </button>
+            <button class="suggestion-card" onclick="useSuggestion('给我推荐几本关于人工智能的书')">
+              <div class="suggestion-icon">📚</div>给我推荐几本关于人工智能的书
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="scroll-to-bottom" id="scroll-btn" onclick="scrollToBottom()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-wrapper">
+        <div class="input-box">
+          <div class="input-files" id="input-files" style="display:none"></div>
+          <div class="textarea-wrap">
+            <textarea id="prompt-input" placeholder="发送消息给 ChatUI..." rows="1"
+              oninput="autoResize(this)" onkeydown="handleKeydown(event)"></textarea>
+          </div>
+          <div class="input-toolbar">
+            <div class="toolbar-left">
+              <button class="toolbar-btn" onclick="document.getElementById('file-input').click()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              </button>
+              <input type="file" id="file-input" multiple onchange="handleFileUpload(this)">
+            </div>
+            <button class="send-btn" id="send-btn" onclick="handleSend()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7-7 7 7"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="input-hint">AI 可能会犯错，请核实重要信息</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Model Modal -->
+<div class="modal-overlay" id="model-modal" style="display:none" onclick="if(event.target===this)closeModelModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>选择模型</h3>
+      <button class="icon-btn" onclick="closeModelModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input type="text" placeholder="搜索模型..." id="model-search" oninput="filterModels(this.value)">
+      </div>
+      <div id="model-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Panel -->
+<div class="settings-panel" id="settings-panel">
+  <div class="settings-header">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;color:var(--text-secondary)"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+    <h2>设置</h2>
+    <button class="icon-btn" onclick="toggleSettings()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="settings-body">
+    <div class="settings-section">
+      <div class="settings-section-title">后端配置</div>
+      <div class="settings-row">
+        <label class="settings-label">Backend 地址</label>
+        <input class="settings-input" type="text" id="api-url" placeholder="http://127.0.0.1:8088">
+      </div>
+      <div class="settings-row">
+        <label class="settings-label">认证模式</label>
+        <input class="settings-input" type="text" id="api-key" value="Bearer Token (自动管理)" readonly>
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">生成参数</div>
+      <div class="settings-row">
+        <label class="settings-label">Temperature: <span id="temp-val">0.7</span></label>
+        <input class="settings-range" type="range" min="0" max="2" step="0.1" value="0.7" oninput="document.getElementById('temp-val').textContent=this.value">
+      </div>
+      <div class="settings-row">
+        <label class="settings-label">最大 Token 数: <span id="maxtoken-val">2048</span></label>
+        <input class="settings-range" type="range" min="256" max="8192" step="256" value="2048" oninput="document.getElementById('maxtoken-val').textContent=this.value">
+      </div>
+      <div class="settings-row">
+        <label class="settings-label">系统提示词</label>
+        <textarea class="settings-input" rows="3" id="system-prompt" placeholder="你是一个有帮助的 AI 助手..."></textarea>
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">界面</div>
+      <div class="settings-toggle">
+        <span class="toggle-label">深色模式</span>
+        <button class="toggle on" id="dark-toggle" onclick="toggleTheme();this.classList.toggle('on')"></button>
+      </div>
+      <div class="settings-toggle">
+        <span class="toggle-label">流式响应</span>
+        <button class="toggle on" id="stream-toggle" onclick="this.classList.toggle('on')"></button>
+      </div>
+      <div class="settings-toggle">
+        <span class="toggle-label">显示消息时间</span>
+        <button class="toggle" id="time-toggle" onclick="this.classList.toggle('on')"></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+// ════════════════════════════════
+//  STATE
+// ════════════════════════════════
+const state = {
+  user: null,
+  chats: [], currentChatId: null, messages: [],
+  generating: false, controller: null,
+  selectedModel: 'Qwen3-Coder-Next',
+  attachedFiles: [],
+  sidebarCollapsed: false, settingsOpen: false,
+  dropdownOpen: false,
+  accessToken: '',
+  usage: null,
+};
+
+const API_BASE_KEY = 'chatui_api_base';
+const TOKEN_KEY = 'chatui_access_token';
+const DEFAULT_API_BASE = (window.location && window.location.origin) ? window.location.origin : 'http://127.0.0.1:8088';
+
+function normalizeApiBase(v) {
+  const fallback = DEFAULT_API_BASE.replace(/\/$/, '');
+  if (!v || !String(v).trim()) return fallback;
+  const raw = String(v).trim();
+
+  // 仅接受绝对 http(s) 地址；否则回退到当前 origin，避免出现 /<中文>/api/... 这类相对路径问题。
+  if (!/^https?:\/\//i.test(raw)) return fallback;
+  try {
+    const u = new URL(raw);
+    return (u.origin + u.pathname).replace(/\/$/, '');
+  } catch {
+    return fallback;
+  }
+}
+
+function getApiBase() {
+  const saved = localStorage.getItem(API_BASE_KEY);
+  return normalizeApiBase(saved);
+}
+function setApiBase(v) {
+  const normalized = normalizeApiBase(v);
+  localStorage.setItem(API_BASE_KEY, normalized);
+  return normalized;
+}
+function getToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
+function setToken(v) { localStorage.setItem(TOKEN_KEY, v || ''); }
+function clearSession() { localStorage.removeItem(TOKEN_KEY); }
+
+async function apiRequest(path, options = {}) {
+  const headers = Object.assign({'Content-Type': 'application/json'}, options.headers || {});
+  const token = state.accessToken || getToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(
+    getApiBase() + path,
+    Object.assign({ credentials: 'same-origin' }, options, { headers })
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
+}
+
+const MODELS = [
+  { id: 'Qwen3-Coder-Next', name: 'Qwen3-Coder-Next', desc: '本地 OpenAI 兼容推理模型', color: '#0ea5e9' },
+  { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', desc: '最强大，适合复杂推理', color: '#7c3aed' },
+  { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', desc: '高能力与效率的平衡', color: '#2563eb' },
+  { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', desc: '快速轻量，日常使用', color: '#0891b2' },
+  { id: 'gpt-4o', name: 'GPT-4o', desc: 'OpenAI 旗舰多模态模型', color: '#16a34a' },
+  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', desc: '快速高效的 GPT-4', color: '#15803d' },
+  { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', desc: '具有128k上下文窗口', color: '#166534' },
+  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', desc: 'Google 最新快速模型', color: '#d97706' },
+  { id: 'deepseek-r1', name: 'DeepSeek R1', desc: '强大的推理模型', color: '#dc2626' },
+  { id: 'llama-3.3-70b', name: 'Llama 3.3 70B', desc: 'Meta 开源旗舰模型', color: '#7c3aed' },
+  { id: 'mixtral-8x7b', name: 'Mixtral 8×7B', desc: 'Mistral MoE 架构', color: '#0e7490' },
+];
+
+// ════════════════════════════════
+//  MARKDOWN
+// ════════════════════════════════
+marked.setOptions({ breaks: true, gfm: true });
+const renderer = new marked.Renderer();
+renderer.code = (code, lang) => {
+  const language = lang || 'plaintext';
+  let highlighted;
+  try { highlighted = hljs.highlight(code.text || code, { language }).value; } catch { highlighted = (code.text || code).replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  return `<div class="code-block-wrapper"><div class="code-header"><span class="code-lang">${language}</span><button class="copy-code-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制</button></div><pre><code class="hljs">${highlighted}</code></pre></div>`;
+};
+marked.use({ renderer });
+
+// ════════════════════════════════
+//  UTILS
+// ════════════════════════════════
+function formatTime(d) { d = d||new Date(); return d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}); }
+function genId() { return Math.random().toString(36).slice(2); }
+function showToast(msg, type='info') {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.innerHTML = `<span class="toast-dot"></span>${msg}`;
+  c.appendChild(t);
+  setTimeout(() => t.style.opacity='0', 2700);
+  setTimeout(() => t.remove(), 3000);
+}
+function copyText(text) { navigator.clipboard.writeText(text).then(() => showToast('已复制到剪贴板','success')); }
+function copyCode(btn) {
+  const code = btn.closest('.code-block-wrapper').querySelector('code').innerText;
+  copyText(code);
+  btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>已复制`;
+  setTimeout(() => btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制`, 2000);
+}
+function setLoading(btnId, loading, text='') {
+  const btn = document.getElementById(btnId);
+  if (loading) { btn.disabled = true; btn.innerHTML = `<span class="spinner"></span>`; }
+  else { btn.disabled = false; btn.textContent = text; }
+}
+
+// ════════════════════════════════
+//  AUTH
+// ════════════════════════════════
+function switchTab(tab) {
+  document.getElementById('tab-login').classList.toggle('active', tab==='login');
+  document.getElementById('tab-register').classList.toggle('active', tab==='register');
+  document.getElementById('form-login').classList.toggle('active', tab==='login');
+  document.getElementById('form-register').classList.toggle('active', tab==='register');
+  clearErrors();
+}
+
+function clearErrors() {
+  document.querySelectorAll('.form-error').forEach(e => e.classList.remove('visible'));
+  document.querySelectorAll('.form-input').forEach(i => i.classList.remove('error'));
+}
+
+function showErr(id, inputId) {
+  document.getElementById(id).classList.add('visible');
+  if (inputId) document.getElementById(inputId).classList.add('error');
+}
+
+function validateEmail(e) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }
+
+function togglePwd(inputId, btn) {
+  const input = document.getElementById(inputId);
+  const isText = input.type === 'text';
+  input.type = isText ? 'password' : 'text';
+  btn.innerHTML = isText
+    ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
+    : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+}
+
+function checkStrength(pwd) {
+  const fill = document.getElementById('strength-fill');
+  const label = document.getElementById('strength-label');
+  let score = 0;
+  if (pwd.length >= 8) score++;
+  if (/[A-Z]/.test(pwd)) score++;
+  if (/[0-9]/.test(pwd)) score++;
+  if (/[^A-Za-z0-9]/.test(pwd)) score++;
+  const configs = [
+    { w:'0%', c:'transparent', t:'' },
+    { w:'25%', c:'#ef4444', t:'弱' },
+    { w:'50%', c:'#f97316', t:'一般' },
+    { w:'75%', c:'#eab308', t:'较强' },
+    { w:'100%', c:'#22c55e', t:'强' },
+  ];
+  const cfg = configs[score];
+  fill.style.width = cfg.w; fill.style.background = cfg.c;
+  label.textContent = cfg.t ? `密码强度：${cfg.t}` : '';
+  label.style.color = cfg.c;
+}
+
+async function handleLogin() {
+  clearErrors();
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  let valid = true;
+  if (!validateEmail(email)) { showErr('login-email-err','login-email'); valid=false; }
+  if (!password) { showErr('login-pwd-err','login-password'); valid=false; }
+  if (!valid) return;
+
+  setLoading('login-btn', true);
+  try {
+    const data = await apiRequest('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password })
+    });
+    state.accessToken = data.access_token || '';
+    setToken(state.accessToken);
+    await enterApp(data.user);
+    showToast('登录成功', 'success');
+  } catch (err) {
+    showToast(err.message || '登录失败', 'error');
+  } finally {
+    setLoading('login-btn', false, '登录');
+  }
+}
+
+async function handleRegister() {
+  clearErrors();
+  const username = document.getElementById('reg-username').value.trim();
+  const email = document.getElementById('reg-email').value.trim();
+  const password = document.getElementById('reg-password').value;
+  const confirm = document.getElementById('reg-confirm').value;
+  const agreed = document.getElementById('agree-terms').checked;
+  let valid = true;
+
+  if (username.length < 3) { showErr('reg-username-err','reg-username'); valid=false; }
+  if (!validateEmail(email)) { showErr('reg-email-err','reg-email'); valid=false; }
+  if (password.length < 8) { showErr('reg-pwd-err','reg-password'); valid=false; }
+  if (password !== confirm) { showErr('reg-confirm-err','reg-confirm'); valid=false; }
+  if (!agreed) { showErr('reg-terms-err'); valid=false; }
+  if (!valid) return;
+
+  setLoading('register-btn', true);
+  try {
+    await apiRequest('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ username, email, password })
+    });
+    showToast('注册成功，请登录', 'success');
+    switchTab('login');
+    document.getElementById('login-email').value = email;
+    document.getElementById('login-password').focus();
+  } catch (err) {
+    showToast(err.message || '注册失败', 'error');
+  } finally {
+    setLoading('register-btn', false, '创建账号');
+  }
+}
+
+function oauthLogin(provider) {
+  showToast(`${provider} OAuth 暂未接入后端`, 'info');
+}
+
+function showForgot() {
+  showToast('密码重置邮件将发送到您的邮箱（演示功能）', 'info');
+}
+
+async function loadConversations() {
+  const data = await apiRequest('/api/conversations');
+  state.chats = (data.items || []).map(c => ({
+    id: String(c.id),
+    title: c.title || '新对话',
+    model: c.model || '',
+    createdAt: c.created_at ? new Date(c.created_at * 1000) : new Date(),
+    updatedAt: c.updated_at ? new Date(c.updated_at * 1000) : new Date()
+  }));
+}
+
+async function loadMessages(convId) {
+  const data = await apiRequest(`/api/conversations/${convId}/messages`);
+  const items = (data.items || []).slice().reverse();
+  state.messages = items.map(m => ({
+    role: m.role,
+    content: m.content || '',
+    time: m.created_at ? new Date(m.created_at * 1000) : new Date()
+  }));
+}
+
+async function enterApp(user) {
+  state.user = user;
+  document.getElementById('auth-page').classList.add('hidden');
+  setTimeout(() => {
+    document.getElementById('auth-page').style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+  }, 300);
+
+  // Update UI with user info
+  const initials = user.name ? user.name[0].toUpperCase() : 'U';
+  document.getElementById('user-avatar-sidebar').textContent = initials;
+  document.getElementById('sidebar-username').textContent = user.name || user.username;
+  document.getElementById('sidebar-email').textContent = user.email;
+  document.getElementById('welcome-title').textContent = `你好，${user.name || user.username}！今天我能帮你做什么？`;
+
+  await loadConversations();
+  if (state.chats.length > 0) {
+    await switchChat(state.chats[0].id);
+  } else {
+    renderChatList();
+    renderMessages();
+  }
+  renderModelList('');
+  document.getElementById('prompt-input').focus();
+}
+
+async function handleLogout() {
+  try { await apiRequest('/api/auth/logout', { method: 'POST' }); } catch {}
+  clearSession();
+  state.accessToken = '';
+  state.user = null;
+  state.chats = []; state.messages = []; state.currentChatId = null;
+  closeDropdown();
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('auth-page').style.display = 'flex';
+  document.getElementById('auth-page').classList.remove('hidden');
+  clearErrors();
+  switchTab('login');
+  document.getElementById('login-email').value = '';
+  document.getElementById('login-password').value = '';
+  document.getElementById('messages-container').querySelectorAll('.message-group').forEach(e=>e.remove());
+  document.getElementById('welcome-screen').style.display = 'flex';
+  document.getElementById('topbar-title').textContent = '新对话';
+  showToast('已退出登录','info');
+}
+
+// ════════════════════════════════
+//  SIDEBAR / THEME / SETTINGS
+// ════════════════════════════════
+function toggleSidebar() {
+  state.sidebarCollapsed = !state.sidebarCollapsed;
+  document.getElementById('sidebar').classList.toggle('collapsed', state.sidebarCollapsed);
+}
+
+function toggleTheme() {
+  const html = document.documentElement;
+  const isDark = html.dataset.theme === 'dark';
+  html.dataset.theme = isDark ? 'light' : 'dark';
+  const sunPath = '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>';
+  const moonPath = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+  const newPath = isDark ? sunPath : moonPath;
+  ['auth-theme-icon','theme-icon-dd'].forEach(id => { const el = document.getElementById(id); if(el) el.innerHTML = newPath; });
+}
+
+function toggleSettings() {
+  state.settingsOpen = !state.settingsOpen;
+  document.getElementById('settings-panel').classList.toggle('open', state.settingsOpen);
+}
+
+function toggleDropdown() {
+  state.dropdownOpen = !state.dropdownOpen;
+  document.getElementById('user-dropdown').classList.toggle('open', state.dropdownOpen);
+}
+function closeDropdown() {
+  state.dropdownOpen = false;
+  document.getElementById('user-dropdown').classList.remove('open');
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('#sidebar-user') && !e.target.closest('#user-dropdown')) closeDropdown();
+  if (!e.target.closest('#settings-panel') && !e.target.closest('.topbar .icon-btn:last-child') && !e.target.closest('.sidebar-footer-btn')) {
+    // keep settings open if clicked inside
+  }
+});
+
+// ════════════════════════════════
+//  MODEL MODAL
+// ════════════════════════════════
+function openModelModal() {
+  renderModelList('');
+  document.getElementById('model-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('model-search').focus(), 100);
+}
+function closeModelModal() { document.getElementById('model-modal').style.display = 'none'; }
+function filterModels(q) { renderModelList(q); }
+function renderModelList(q) {
+  const list = document.getElementById('model-list');
+  const filtered = MODELS.filter(m => m.name.toLowerCase().includes(q.toLowerCase()) || m.id.includes(q.toLowerCase()));
+  list.innerHTML = filtered.map(m => `
+    <div class="model-option ${m.id===state.selectedModel?'selected':''}" onclick="selectModel('${m.id}','${m.name}')">
+      <span class="model-option-dot" style="background:${m.color}"></span>
+      <div class="model-option-info">
+        <div class="model-option-name">${m.name}</div>
+        <div class="model-option-desc">${m.desc}</div>
+      </div>
+      ${m.id===state.selectedModel?'<svg class="model-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>':''}
+    </div>`).join('');
+}
+function selectModel(id, name) {
+  state.selectedModel = id;
+  document.getElementById('current-model-name').textContent = name;
+  closeModelModal();
+  showToast(`已切换到 ${name}`, 'success');
+}
+
+// ════════════════════════════════
+//  CHAT
+// ════════════════════════════════
+async function newChat() {
+  const data = await apiRequest('/api/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ model: state.selectedModel, system_prompt: document.getElementById('system-prompt').value || '' })
+  });
+  const c = data.conversation;
+  const chat = {
+    id: String(c.id),
+    title: c.title || '新对话',
+    model: c.model || state.selectedModel,
+    createdAt: c.created_at ? new Date(c.created_at * 1000) : new Date()
+  };
+  state.chats.unshift(chat);
+  state.currentChatId = chat.id;
+  state.messages = [];
+  renderChatList();
+  renderMessages();
+  document.getElementById('topbar-title').textContent = chat.title;
+  document.getElementById('prompt-input').focus();
+  closeDropdown();
+}
+
+async function switchChat(id) {
+  const chat = state.chats.find(c => c.id===id);
+  if (!chat) return;
+  state.currentChatId = id;
+  await loadMessages(id);
+  document.getElementById('topbar-title').textContent = chat.title;
+  renderChatList();
+  renderMessages();
+  setTimeout(scrollToBottom, 50);
+}
+
+function renderChatList() {
+  const list = document.getElementById('chat-list');
+  if (state.chats.length === 0) { list.innerHTML = ''; return; }
+  list.innerHTML = `<div class="sidebar-section"><div class="sidebar-label">最近对话</div></div>` +
+    state.chats.map(c => `
+      <div class="chat-item ${c.id===state.currentChatId?'active':''}" onclick="switchChat('${c.id}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span>${c.title}</span>
+      </div>`).join('');
+}
+
+// ════════════════════════════════
+//  RENDERING
+// ════════════════════════════════
+function renderMessages() {
+  const container = document.getElementById('messages-container');
+  const welcome = document.getElementById('welcome-screen');
+  container.querySelectorAll('.message-group').forEach(el => el.remove());
+  if (state.messages.length === 0) { welcome.style.display = 'flex'; return; }
+  welcome.style.display = 'none';
+  state.messages.forEach((msg, i) => container.appendChild(createMessageEl(msg, i)));
+}
+
+function createMessageEl(msg, idx) {
+  const isUser = msg.role === 'user';
+  const div = document.createElement('div');
+  div.className = 'message-group';
+  div.dataset.idx = idx;
+  const showTime = document.getElementById('time-toggle')?.classList.contains('on');
+  const timeStr = showTime ? `<span class="message-time">${formatTime(msg.time)}</span>` : '';
+  const avatarUser = `<div class="avatar user"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>`;
+  const avatarInitials = state.user?.name?.[0]?.toUpperCase() || 'U';
+  const avatarUserPersonal = `<div class="avatar" style="background:linear-gradient(135deg,#2563eb,#7c3aed);color:white;font-size:12px;font-weight:700">${avatarInitials}</div>`;
+  const avatarAI = `<div class="avatar assistant"><svg viewBox="0 0 24 24" fill="white"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg></div>`;
+  let contentHtml;
+  if (isUser) {
+    const text = msg.content.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+    const filesHtml = msg.files?.length ? `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px;justify-content:flex-end">${msg.files.map(f=>`<span style="background:rgba(255,255,255,0.2);padding:2px 8px;border-radius:4px;font-size:11.5px">📎 ${f}</span>`).join('')}</div>` : '';
+    contentHtml = `<div class="message-bubble">${filesHtml}<span>${text}</span></div>`;
+  } else {
+    const md = marked.parse(msg.content || '');
+    contentHtml = `<div class="message-bubble"><div class="md-content">${md}</div></div>`;
+  }
+  div.innerHTML = `
+    <div class="message-row ${isUser?'user':'assistant'}">
+      ${isUser ? avatarUserPersonal : avatarAI}
+      <div class="message-content">
+        <div class="message-header">
+          <span class="message-name">${isUser?(state.user?.name||'你'):'ChatUI'}</span>
+          ${timeStr}
+        </div>
+        ${contentHtml}
+        ${!isUser ? `<div class="message-actions">
+          <button class="action-btn" onclick="copyText(state.messages[${idx}].content)" title="复制">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+          <button class="action-btn" onclick="regenerate(${idx})" title="重新生成">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 .49-3.51"/></svg>
+          </button>
+        </div>` : ''}
+      </div>
+    </div>`;
+  return div;
+}
+
+// ════════════════════════════════
+//  INPUT
+// ════════════════════════════════
+function autoResize(ta) { ta.style.height='auto'; ta.style.height=Math.min(ta.scrollHeight,220)+'px'; }
+function handleKeydown(e) { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();handleSend();} }
+function useSuggestion(text) { document.getElementById('prompt-input').value=text; autoResize(document.getElementById('prompt-input')); handleSend(); }
+
+function handleFileUpload(input) {
+  const files = Array.from(input.files);
+  state.attachedFiles.push(...files.map(f=>f.name));
+  const container = document.getElementById('input-files');
+  container.style.display='flex';
+  container.innerHTML = state.attachedFiles.map((f,i)=>`
+    <div class="file-chip">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+      ${f}
+      <button class="file-chip-remove" onclick="removeFile(${i})">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:10px;height:10px"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>`).join('');
+  input.value='';
+}
+function removeFile(idx) {
+  state.attachedFiles.splice(idx,1);
+  const container = document.getElementById('input-files');
+  if(state.attachedFiles.length===0){container.style.display='none';container.innerHTML='';return;}
+  handleFileUpload({files:[]});
+}
+
+// ════════════════════════════════
+//  SEND / STREAM
+// ════════════════════════════════
+async function handleSend() {
+  if (state.generating) { stopGeneration(); return; }
+  const input = document.getElementById('prompt-input');
+  const prompt = input.value.trim();
+  if (!prompt) return;
+  if (!state.currentChatId) await newChat();
+
+  const files = [...state.attachedFiles];
+  state.attachedFiles = [];
+  document.getElementById('input-files').style.display='none';
+  document.getElementById('input-files').innerHTML='';
+  input.value=''; input.style.height='auto';
+
+  const userMsg = { role:'user', content:prompt, time:new Date(), files };
+  state.messages.push(userMsg);
+
+  const chat = state.chats.find(c=>c.id===state.currentChatId);
+  if (chat && chat.title==='新对话') {
+    chat.title = prompt.slice(0,28)+(prompt.length>28?'…':'');
+    document.getElementById('topbar-title').textContent = chat.title;
+    renderChatList();
+  }
+
+  document.getElementById('welcome-screen').style.display='none';
+  const container = document.getElementById('messages-container');
+  container.appendChild(createMessageEl(userMsg, state.messages.length-1));
+
+  const aiMsg = { role:'assistant', content:'', time:new Date() };
+  state.messages.push(aiMsg);
+  const aiIdx = state.messages.length-1;
+
+  const aiEl = document.createElement('div');
+  aiEl.className='message-group'; aiEl.dataset.idx=aiIdx;
+  aiEl.innerHTML=`
+    <div class="message-row assistant">
+      <div class="avatar assistant"><svg viewBox="0 0 24 24" fill="white"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg></div>
+      <div class="message-content">
+        <div class="message-header"><span class="message-name">ChatUI</span></div>
+        <div class="message-bubble">
+          <div class="thinking"><div class="thinking-dots"><div class="thinking-dot"></div><div class="thinking-dot"></div><div class="thinking-dot"></div></div>正在思考…</div>
+        </div>
+      </div>
+    </div>`;
+  container.appendChild(aiEl);
+  scrollToBottom();
+
+  state.generating=true;
+  const sendBtn=document.getElementById('send-btn');
+  sendBtn.classList.add('stop');
+  sendBtn.innerHTML=`<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`;
+
+  const systemPrompt=document.getElementById('system-prompt').value;
+  const messages=state.messages.slice(0,-1).map(m=>({role:m.role,content:m.content}));
+
+  try { await streamFromAPI({messages,aiMsg,aiEl,systemPrompt}); }
+  catch(err) {
+    if(err.name!=='AbortError'){
+      const bubble=aiEl.querySelector('.message-bubble');
+      bubble.innerHTML=`<div class="md-content" style="color:var(--red)">⚠️ 请求失败：${err.message}</div>`;
+      aiMsg.content='[请求失败]';
+    }
+  }
+
+  state.generating=false;
+  sendBtn.classList.remove('stop');
+  sendBtn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7-7 7 7"/></svg>`;
+  if (chat && chat.title==='新对话') {
+    chat.title = prompt.slice(0,28)+(prompt.length>28?'…':'');
+    try {
+      await apiRequest(`/api/conversations/${state.currentChatId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: chat.title })
+      });
+    } catch {}
+    renderChatList();
+  }
+}
+
+async function streamFromAPI({messages,aiMsg,aiEl,systemPrompt}) {
+  const bubble=aiEl.querySelector('.message-bubble');
+  const mdDiv=document.createElement('div'); mdDiv.className='md-content';
+  state.controller=new AbortController();
+
+  const body={conversation_id:Number(state.currentChatId),model:state.selectedModel,max_tokens:2048,messages};
+  if(systemPrompt) body.system_prompt=systemPrompt;
+  const headers={'Content-Type':'application/json'};
+  if (state.accessToken || getToken()) headers['Authorization'] = `Bearer ${state.accessToken || getToken()}`;
+
+  const res=await fetch(getApiBase() + '/api/chat/sse',{
+    method:'POST',
+    credentials:'same-origin',
+    headers,
+    body:JSON.stringify(body),
+    signal:state.controller.signal
+  });
+  if(!res.ok){const err=await res.json().catch(()=>({}));throw new Error(err?.error||`HTTP ${res.status}`);}
+
+  if (!res.body) throw new Error('响应为空');
+  let fullText='';
+  let buffer = '';
+  const reader=res.body.getReader();
+  const decoder=new TextDecoder();
+  bubble.innerHTML=''; bubble.appendChild(mdDiv);
+  const cursor=document.createElement('span'); cursor.className='streaming-cursor';
+
+  const processEvent = (raw) => {
+    let eventName = '';
+    const lines = raw.split('\n');
+    let data = '';
+    for (const line of lines) {
+      if (line.startsWith('event:')) eventName = line.slice(6).trim();
+      if (line.startsWith('data:')) data += line.slice(5).trim();
+    }
+    if (!data) return false;
+    let payload = {};
+    try { payload = JSON.parse(data); } catch { return false; }
+    if (payload.type === 'token') {
+      fullText += payload.content || '';
+      mdDiv.innerHTML = marked.parse(fullText);
+      mdDiv.appendChild(cursor);
+      scrollToBottom();
+    } else if (payload.type === 'usage') {
+      state.usage = payload;
+    } else if (payload.type === 'error' || eventName === 'error') {
+      throw new Error(payload.message || payload.code || 'stream error');
+    } else if (payload.type === 'done' || eventName === 'done') {
+      return true;
+    }
+    return false;
+  };
+
+  while(true){
+    const{done,value}=await reader.read();
+    if(done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sepIndex;
+    while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+      const rawEvent = buffer.slice(0, sepIndex).replace(/\r/g, '');
+      buffer = buffer.slice(sepIndex + 2);
+      if (processEvent(rawEvent)) {
+        reader.cancel();
+        break;
+      }
+    }
+  }
+  cursor.remove();
+  aiMsg.content=fullText;
+  const idx=parseInt(aiEl.dataset.idx);
+  const fresh=createMessageEl(state.messages[idx],idx); aiEl.replaceWith(fresh);
+}
+
+function stopGeneration(){
+  if(state.controller) state.controller.abort();
+  state.generating=false;
+  const sendBtn=document.getElementById('send-btn');
+  sendBtn.classList.remove('stop');
+  sendBtn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7-7 7 7"/></svg>`;
+  showToast('已停止生成','info');
+}
+
+async function regenerate(idx){
+  state.messages.splice(idx);
+  const container=document.getElementById('messages-container');
+  container.querySelectorAll('.message-group').forEach(el=>{if(parseInt(el.dataset.idx)>=idx)el.remove();});
+  const lastUser=state.messages[state.messages.length-1];
+  if(lastUser?.role==='user'){
+    state.messages.pop();
+    document.getElementById('prompt-input').value=lastUser.content;
+    state.attachedFiles=lastUser.files||[];
+    container.querySelectorAll('.message-group').forEach(el=>{if(parseInt(el.dataset.idx)>=state.messages.length)el.remove();});
+    await handleSend();
+  }
+}
+
+// ════════════════════════════════
+//  SCROLL
+// ════════════════════════════════
+function scrollToBottom(){const area=document.getElementById('messages-area');area.scrollTo({top:area.scrollHeight,behavior:'smooth'});}
+document.getElementById('messages-area').addEventListener('scroll',function(){
+  const nearBottom=this.scrollHeight-this.scrollTop-this.clientHeight<100;
+  document.getElementById('scroll-btn').classList.toggle('visible',!nearBottom);
+});
+
+// ════════════════════════════════
+//  INIT — check session
+// ════════════════════════════════
+(function init(){
+  renderModelList('');
+  if (!localStorage.getItem(API_BASE_KEY)) setApiBase(DEFAULT_API_BASE);
+  document.getElementById('api-url').value = getApiBase();
+  const token = getToken();
+  if(token) state.accessToken = token;
+
+  apiRequest('/api/users/me')
+    .then(data => enterApp(data.user))
+    .catch(() => apiRequest('/api/auth/me')
+      .then(data => enterApp(data.user))
+      .catch(() => clearSession()));
+
+  document.getElementById('api-url').addEventListener('change', (e) => {
+    const normalized = setApiBase(e.target.value);
+    e.target.value = normalized;
+    showToast('后端地址已保存', 'success');
+  });
+  // Keyboard shortcut Enter on auth forms
+  document.addEventListener('keydown', e => {
+    if (e.key==='Enter' && document.getElementById('auth-page').style.display!=='none') {
+      const activeForm = document.getElementById('form-login').classList.contains('active') ? 'login' : 'register';
+      if (activeForm==='login') handleLogin();
+      else handleRegister();
+    }
+  });
+})();
+</script>
+</body>
+</html>

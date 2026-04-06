@@ -1,0 +1,12 @@
+{
+  "default_model": "local",
+  "models": {
+    "local": {
+      "api_key": "",
+      "base_url": "http://localhost:8002",
+      "model": "Qwen3-Coder-Next",
+      "max_tokens": 2048,
+      "timeout": 120
+    }
+  }
+}
