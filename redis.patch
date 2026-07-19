@@ -1,0 +1,1080 @@
+diff --git a/HttpServer_v2/include/middleware/rate_limit/RateLimitMiddleware.h b/HttpServer_v2/include/middleware/rate_limit/RateLimitMiddleware.h
+new file mode 100644
+index 0000000..c37b3f9
+--- /dev/null
++++ b/HttpServer_v2/include/middleware/rate_limit/RateLimitMiddleware.h
+@@ -0,0 +1,69 @@
++#pragma once
++
++#include <chrono>
++#include <memory>
++#include <string>
++
++#include "../../http/HttpRequest.h"
++#include "../../http/HttpResponse.h"
++#include "../Middleware.h"
++#include <sw/redis++/redis++.h>
++
++namespace http {
++namespace middleware {
++
++struct RateLimitConfig {
++    int loginPerMinute = 5;
++    int loginPer15Min = 20;
++
++    int ssePerMinute = 30;
++    int sseBurst = 10;
++
++    int sseConnLimit = 3;
++    int sseConnTtlSec = 3600;
++};
++
++class RateLimiter {
++public:
++    explicit RateLimiter(const std::string& redisUri, const RateLimitConfig& cfg = {})
++        : redis_(redisUri), cfg_(cfg) {}
++
++    bool allowLogin(const std::string& clientIp,
++                    const std::string& email,
++                    int* retryAfterSec = nullptr);
++
++    bool allowSseRequest(const std::string& userKey, int* retryAfterSec = nullptr);
++
++    bool acquireSseConnectionSlot(const std::string& userKey, int* retryAfterSec = nullptr);
++    void releaseSseConnectionSlot(const std::string& userKey);
++
++    const RateLimitConfig& config() const { return cfg_; }
++
++private:
++    static long long nowMs();
++    static std::string hashKey(const std::string& raw);
++
++private:
++    sw::redis::Redis redis_;
++    RateLimitConfig cfg_;
++};
++
++class RateLimitMiddleware : public Middleware {
++public:
++    explicit RateLimitMiddleware(std::shared_ptr<RateLimiter> limiter)
++        : limiter_(std::move(limiter)) {}
++
++    void before(HttpRequest& request) override;
++    void after(HttpResponse&) override {}
++
++private:
++    static std::string extractClientIp(const HttpRequest& req);
++    static std::string extractJsonStringField(const std::string& body, const std::string& field);
++    static HttpResponse tooManyRequestsResponse(int retryAfterSec, const std::string& message);
++
++private:
++    std::shared_ptr<RateLimiter> limiter_;
++};
++
++}  // namespace middleware
++}  // namespace http
+diff --git a/HttpServer_v2/src/middleware/rate_limit/RateLimitMiddleware.cpp b/HttpServer_v2/src/middleware/rate_limit/RateLimitMiddleware.cpp
+new file mode 100644
+index 0000000..3228bc5
+--- /dev/null
++++ b/HttpServer_v2/src/middleware/rate_limit/RateLimitMiddleware.cpp
+@@ -0,0 +1,257 @@
++#include "../../../include/middleware/rate_limit/RateLimitMiddleware.h"
++
++#include <algorithm>
++#include <cctype>
++#include <cstdlib>
++#include <functional>
++#include <random>
++#include <sstream>
++
++namespace http {
++namespace middleware {
++
++namespace {
++
++const char* kSlidingWindowScript = R"(
++local key = KEYS[1]
++local now_ms = tonumber(ARGV[1])
++local window_ms = tonumber(ARGV[2])
++local limit = tonumber(ARGV[3])
++local member = ARGV[4]
++
++redis.call('ZREMRANGEBYSCORE', key, 0, now_ms - window_ms)
++local cnt = redis.call('ZCARD', key)
++if cnt >= limit then
++  local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
++  local retry = 1
++  if oldest and #oldest >= 2 then
++    retry = math.ceil((tonumber(oldest[2]) + window_ms - now_ms) / 1000)
++    if retry < 1 then retry = 1 end
++  end
++  return -retry
++end
++redis.call('ZADD', key, now_ms, member)
++redis.call('EXPIRE', key, math.floor(window_ms / 1000) + 2)
++return 1
++)";
++
++const char* kTokenBucketScript = R"(
++local key = KEYS[1]
++local rate = tonumber(ARGV[1])
++local cap = tonumber(ARGV[2])
++local now_ms = tonumber(ARGV[3])
++local req = tonumber(ARGV[4])
++
++local data = redis.call('HMGET', key, 'tokens', 'ts')
++local tokens = tonumber(data[1])
++local ts = tonumber(data[2])
++if tokens == nil then tokens = cap end
++if ts == nil then ts = now_ms end
++
++local delta = (now_ms - ts) / 1000.0 * rate
++if delta < 0 then delta = 0 end
++tokens = math.min(cap, tokens + delta)
++
++if tokens >= req then
++  tokens = tokens - req
++  redis.call('HMSET', key, 'tokens', tokens, 'ts', now_ms)
++  local ttl = math.ceil(cap / rate) * 2
++  if ttl < 2 then ttl = 2 end
++  redis.call('EXPIRE', key, ttl)
++  return 1
++end
++
++redis.call('HMSET', key, 'tokens', tokens, 'ts', now_ms)
++local ttl = math.ceil(cap / rate) * 2
++if ttl < 2 then ttl = 2 end
++redis.call('EXPIRE', key, ttl)
++
++local retry = math.ceil((req - tokens) / rate)
++if retry < 1 then retry = 1 end
++return -retry
++)";
++
++const char* kAcquireConnScript = R"(
++local key = KEYS[1]
++local limit = tonumber(ARGV[1])
++local ttl = tonumber(ARGV[2])
++
++local cur = tonumber(redis.call('GET', key) or '0')
++if cur >= limit then
++  return 0
++end
++cur = redis.call('INCR', key)
++if redis.call('TTL', key) < 0 then
++  redis.call('EXPIRE', key, ttl)
++end
++return cur
++)";
++
++const char* kReleaseConnScript = R"(
++local key = KEYS[1]
++if redis.call('EXISTS', key) == 0 then
++  return 0
++end
++local cur = redis.call('DECR', key)
++if cur <= 0 then
++  redis.call('DEL', key)
++  return 0
++end
++return cur
++)";
++
++std::string makeMember(long long now_ms) {
++    static thread_local std::mt19937_64 rng{std::random_device{}()};
++    std::uniform_int_distribution<unsigned long long> dist;
++    std::ostringstream oss;
++    oss << now_ms << ":" << dist(rng);
++    return oss.str();
++}
++
++}  // namespace
++
++long long RateLimiter::nowMs() {
++    auto now = std::chrono::system_clock::now().time_since_epoch();
++    return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
++}
++
++std::string RateLimiter::hashKey(const std::string& raw) {
++    return std::to_string(std::hash<std::string>{}(raw));
++}
++
++bool RateLimiter::allowLogin(const std::string& clientIp,
++                             const std::string& email,
++                             int* retryAfterSec) {
++    const auto now_ms = nowMs();
++    const std::string dim = hashKey(clientIp + "|" + email);
++
++    int retry = 0;
++
++    {
++        const std::string key = "rl:login:m1:" + dim;
++        const long long r = redis_.eval<long long>(
++            kSlidingWindowScript,
++            {key},
++            {std::to_string(now_ms), std::to_string(60 * 1000), std::to_string(cfg_.loginPerMinute), makeMember(now_ms)});
++        if (r <= 0) retry = std::max(retry, static_cast<int>(-r));
++    }
++
++    {
++        const std::string key = "rl:login:m15:" + dim;
++        const long long r = redis_.eval<long long>(
++            kSlidingWindowScript,
++            {key},
++            {std::to_string(now_ms), std::to_string(15 * 60 * 1000), std::to_string(cfg_.loginPer15Min), makeMember(now_ms)});
++        if (r <= 0) retry = std::max(retry, static_cast<int>(-r));
++    }
++
++    if (retryAfterSec) *retryAfterSec = retry;
++    return retry == 0;
++}
++
++bool RateLimiter::allowSseRequest(const std::string& userKey, int* retryAfterSec) {
++    const auto now_ms = nowMs();
++    const std::string key = "rl:sse:tb:" + hashKey(userKey);
++    const double rate = static_cast<double>(cfg_.ssePerMinute) / 60.0;
++    const long long r = redis_.eval<long long>(
++        kTokenBucketScript,
++        {key},
++        {std::to_string(rate), std::to_string(cfg_.sseBurst), std::to_string(now_ms), "1"});
++    if (r > 0) {
++        if (retryAfterSec) *retryAfterSec = 0;
++        return true;
++    }
++    if (retryAfterSec) *retryAfterSec = static_cast<int>(-r);
++    return false;
++}
++
++bool RateLimiter::acquireSseConnectionSlot(const std::string& userKey, int* retryAfterSec) {
++    const std::string key = "rl:sse:conn:" + hashKey(userKey);
++    const long long r = redis_.eval<long long>(
++        kAcquireConnScript,
++        {key},
++        {std::to_string(cfg_.sseConnLimit), std::to_string(cfg_.sseConnTtlSec)});
++    if (r > 0) {
++        if (retryAfterSec) *retryAfterSec = 0;
++        return true;
++    }
++    if (retryAfterSec) *retryAfterSec = 1;
++    return false;
++}
++
++void RateLimiter::releaseSseConnectionSlot(const std::string& userKey) {
++    const std::string key = "rl:sse:conn:" + hashKey(userKey);
++    redis_.eval<long long>(kReleaseConnScript, {key}, {});
++}
++
++void RateLimitMiddleware::before(HttpRequest& request) {
++    if (!limiter_) return;
++
++    const auto method = request.method();
++    const std::string path = request.path();
++
++    if (method == HttpRequest::kPost && path == "/api/auth/login") {
++        const std::string ip = extractClientIp(request);
++        const std::string email = extractJsonStringField(request.getBody(), "email");
++        int retryAfter = 0;
++        if (!limiter_->allowLogin(ip, email, &retryAfter)) {
++            throw tooManyRequestsResponse(retryAfter, "login rate limit exceeded");
++        }
++        return;
++    }
++
++    if (method == HttpRequest::kPost && path == "/api/chat/sse") {
++        const std::string sid = request.getHeader("Cookie");
++        const std::string ip = extractClientIp(request);
++        const std::string userKey = sid.empty() ? ip : sid;
++        int retryAfter = 0;
++        if (!limiter_->allowSseRequest(userKey, &retryAfter)) {
++            throw tooManyRequestsResponse(retryAfter, "chat rate limit exceeded");
++        }
++        return;
++    }
++}
++
++std::string RateLimitMiddleware::extractClientIp(const HttpRequest& req) {
++    auto xff = req.getHeader("X-Forwarded-For");
++    if (!xff.empty()) {
++        auto pos = xff.find(',');
++        if (pos != std::string::npos) xff = xff.substr(0, pos);
++        xff.erase(xff.begin(), std::find_if(xff.begin(), xff.end(), [](unsigned char c) { return !std::isspace(c); }));
++        xff.erase(std::find_if(xff.rbegin(), xff.rend(), [](unsigned char c) { return !std::isspace(c); }).base(), xff.end());
++        if (!xff.empty()) return xff;
++    }
++    const auto xrip = req.getHeader("X-Real-IP");
++    if (!xrip.empty()) return xrip;
++    return "unknown";
++}
++
++std::string RateLimitMiddleware::extractJsonStringField(const std::string& body, const std::string& field) {
++    const std::string key = "\"" + field + "\"";
++    auto pos = body.find(key);
++    if (pos == std::string::npos) return "";
++    pos += key.size();
++    while (pos < body.size() && (body[pos] == ' ' || body[pos] == ':' || body[pos] == '\n' || body[pos] == '\r' || body[pos] == '\t')) ++pos;
++    if (pos >= body.size() || body[pos] != '"') return "";
++    ++pos;
++    std::string out;
++    while (pos < body.size() && body[pos] != '"') {
++        if (body[pos] == '\\' && pos + 1 < body.size()) ++pos;
++        out.push_back(body[pos]);
++        ++pos;
++    }
++    return out;
++}
++
++HttpResponse RateLimitMiddleware::tooManyRequestsResponse(int retryAfterSec, const std::string& message) {
++    HttpResponse resp(false);
++    resp.setStatusCode(HttpResponse::kUnknown);
++    resp.setStatusLine("HTTP/1.1", static_cast<HttpResponse::HttpStatusCode>(429), "Too Many Requests");
++    resp.setContentType("application/json; charset=utf-8");
++    resp.addHeader("Retry-After", std::to_string(std::max(1, retryAfterSec)));
++    resp.setBody(std::string("{\"error\":\"") + message + "\",\"retry_after\":" + std::to_string(std::max(1, retryAfterSec)) + "}");
++    return resp;
++}
++
++}  // namespace middleware
++}  // namespace http
+diff --git a/chat_ui_v2/CMakeLists.txt b/chat_ui_v2/CMakeLists.txt
+index 1089f4f..be8012e 100644
+--- a/chat_ui_v2/CMakeLists.txt
++++ b/chat_ui_v2/CMakeLists.txt
+@@ -5,12 +5,15 @@ set(CMAKE_CXX_STANDARD 17)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+ 
+ find_package(CURL REQUIRED)
++find_package(PkgConfig REQUIRED)
++pkg_check_modules(REDIS_PLUS_PLUS REQUIRED redis++)
+ 
+ set(HTTP_SERVER_ROOT "${CMAKE_SOURCE_DIR}/../HttpServer_v2")
+ 
+ include_directories(
+     ${HTTP_SERVER_ROOT}/include
+     ${CMAKE_SOURCE_DIR}
++    ${REDIS_PLUS_PLUS_INCLUDE_DIRS}
+ )
+ 
+ file(GLOB_RECURSE HTTP_SERVER_SRCS
+@@ -30,6 +33,7 @@ target_link_libraries(chatui_v2_server
+     crypto
+     mysqlcppconn
+     CURL::libcurl
++    ${REDIS_PLUS_PLUS_LIBRARIES}
+ )
+ 
+ add_custom_command(TARGET chatui_v2_server POST_BUILD
+diff --git a/chat_ui_v2/chat_main.cpp b/chat_ui_v2/chat_main.cpp
+index 1e652f3..76138da 100644
+--- a/chat_ui_v2/chat_main.cpp
++++ b/chat_ui_v2/chat_main.cpp
+@@ -1,10 +1,13 @@
+ #include <algorithm>
+ #include <atomic>
++#include <chrono>
+ #include <condition_variable>
+ #include <cstdlib>
+ #include <fstream>
++#include <functional>
+ #include <memory>
+ #include <mutex>
++#include <random>
+ #include <sstream>
+ #include <string>
+ #include <unordered_map>
+@@ -23,6 +26,9 @@
+ #include "http/HttpRequest.h"
+ #include "http/HttpResponse.h"
+ #include "http/HttpServer.h"
++#include "middleware/rate_limit/RateLimitMiddleware.h"
++#include "queue/RedisMessageQueue.h"
++#include "session/RedisSessionStorage.h"
+ #include "session/SessionManager.h"
+ #include "session/SessionStorage.h"
+ #include "utils/db/DbConnectionPool.h"
+@@ -110,10 +116,13 @@ void ensureSchemaV2(const std::string& dbName)
+         conn->executeUpdate("ALTER TABLE conversations ADD COLUMN model VARCHAR(128) NOT NULL DEFAULT '' AFTER title");
+     if (!hasColumn(dbName, "conversations", "system_prompt"))
+         conn->executeUpdate("ALTER TABLE conversations ADD COLUMN system_prompt TEXT NULL AFTER model");
++    if (!hasColumn(dbName, "messages", "event_id"))
++        conn->executeUpdate("ALTER TABLE messages ADD COLUMN event_id VARCHAR(128) NULL AFTER content");
+ 
+     // 索引/约束幂等处理：已存在时报错则忽略
+     try { conn->executeUpdate("ALTER TABLE users ADD UNIQUE KEY uk_users_email (email)"); } catch (...) {}
+     try { conn->executeUpdate("ALTER TABLE users ADD UNIQUE KEY uk_users_username (username)"); } catch (...) {}
++    try { conn->executeUpdate("ALTER TABLE messages ADD UNIQUE KEY uk_messages_event_id (event_id)"); } catch (...) {}
+ }
+ 
+ std::string env(const char* key, const std::string& def = "")
+@@ -122,6 +131,39 @@ std::string env(const char* key, const std::string& def = "")
+     return (v && v[0]) ? std::string(v) : def;
+ }
+ 
++int envInt(const char* key, int def)
++{
++    const char* v = std::getenv(key);
++    if (!v || !v[0]) return def;
++    try { return std::stoi(v); } catch (...) { return def; }
++}
++
++std::string buildRedisUri()
++{
++    const std::string host = env("REDIS_HOST", "127.0.0.1");
++    const std::string port = env("REDIS_PORT", "6379");
++    const std::string pass = env("REDIS_PASS", "");
++    const std::string db = env("REDIS_DB", "0");
++
++    std::string uri = "tcp://";
++    if (!pass.empty()) uri += ":" + pass + "@";
++    uri += host + ":" + port;
++    uri += "/" + db;
++    return uri;
++}
++
++std::string genEventId()
++{
++    static thread_local std::mt19937_64 rng{std::random_device{}()};
++    std::uniform_int_distribution<unsigned long long> dist;
++    auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
++                   std::chrono::system_clock::now().time_since_epoch())
++                   .count();
++    std::ostringstream oss;
++    oss << now << "-" << std::hex << dist(rng);
++    return oss.str();
++}
++
+ std::string inferProvider(const std::string& modelId,
+                           const std::string& fallbackProvider)
+ {
+@@ -201,11 +243,52 @@ int main(int argc, char** argv)
+     server.setThreadNum(4);
+     server.setWorkerThreads(4);
+ 
+-    auto storage = std::make_unique<http::session::MemorySessionStorage>();
++    const std::string redisUri = buildRedisUri();
++    const int sessionTtlSec = envInt("SESSION_TTL_SEC", 3600);
++    std::unique_ptr<http::session::SessionStorage> storage;
++    try
++    {
++        storage = std::make_unique<http::session::RedisSessionStorage>(redisUri, sessionTtlSec);
++    }
++    catch (const std::exception&)
++    {
++        storage = std::make_unique<http::session::MemorySessionStorage>();
++    }
+     auto sm = std::make_unique<http::session::SessionManager>(std::move(storage));
+     auto* smPtr = sm.get();
+     server.setSessionManager(std::move(sm));
+ 
++    http::middleware::RateLimitConfig rlCfg;
++    rlCfg.loginPerMinute = envInt("LOGIN_RL_PER_MIN", 5);
++    rlCfg.loginPer15Min = envInt("LOGIN_RL_PER_15MIN", 20);
++    rlCfg.ssePerMinute = envInt("SSE_RL_PER_MIN", 30);
++    rlCfg.sseBurst = envInt("SSE_RL_BURST", 10);
++    rlCfg.sseConnLimit = envInt("SSE_CONN_LIMIT", 3);
++    rlCfg.sseConnTtlSec = envInt("SSE_CONN_TTL_SEC", 3600);
++    std::shared_ptr<http::middleware::RateLimiter> limiter;
++    std::shared_ptr<chatui_v2::queue::RedisMessagePublisher> msgPublisher;
++    std::unique_ptr<chatui_v2::queue::RedisMessageConsumer> msgConsumer;
++
++    const std::string streamKey = env("STREAM_KEY", "chat:msg:write");
++    const std::string streamGroup = env("STREAM_GROUP", "msg-writers");
++    const std::string streamConsumer = env("STREAM_CONSUMER", "writer-1");
++    const int streamBlockMs = envInt("STREAM_BLOCK_MS", 2000);
++    try
++    {
++        limiter = std::make_shared<http::middleware::RateLimiter>(redisUri, rlCfg);
++        server.addMiddleware(std::make_shared<http::middleware::RateLimitMiddleware>(limiter));
++        msgPublisher = std::make_shared<chatui_v2::queue::RedisMessagePublisher>(redisUri, streamKey);
++        msgConsumer = std::make_unique<chatui_v2::queue::RedisMessageConsumer>(
++            redisUri, streamKey, streamGroup, streamConsumer, streamBlockMs);
++        msgConsumer->start();
++    }
++    catch (const std::exception&)
++    {
++        limiter.reset();
++        msgPublisher.reset();
++        msgConsumer.reset();
++    }
++
+     server.Get("/", [](const http::HttpRequest&, http::HttpResponse* resp) {
+         resp->setStatusCode(http::HttpResponse::k200Ok);
+         resp->setContentType("text/html; charset=utf-8");
+@@ -272,7 +355,7 @@ int main(int argc, char** argv)
+     server.addRoute(http::HttpRequest::kDelete, "/api/conversations/:id", convDetail);
+     server.addRoute(http::HttpRequest::kGet, "/api/conversations/:id/messages", msgHandler);
+ 
+-    server.Sse("/api/chat/sse", [smPtr, aiConfig](const http::HttpRequest& req, const sse::SseConnectionPtr& sse) {
++    server.Sse("/api/chat/sse", [smPtr, aiConfig, limiter, msgPublisher](const http::HttpRequest& req, const sse::SseConnectionPtr& sse) {
+         if (!sse || !sse->connected()) return;
+ 
+         http::HttpResponse fakeResp(false);
+@@ -289,6 +372,25 @@ int main(int argc, char** argv)
+             return;
+         }
+ 
++        const std::string sseUserKey = "u:" + std::to_string(userId);
++        int connRetry = 0;
++        if (limiter && !limiter->acquireSseConnectionSlot(sseUserKey, &connRetry))
++        {
++            sse->send(std::string("{\"type\":\"error\",\"message\":\"too many concurrent sse connections\",\"retry_after\":")
++                      + std::to_string(std::max(1, connRetry)) + "}", "error");
++            sse->send(R"({"type":"done"})", "done");
++            sse->close();
++            return;
++        }
++
++        struct SseConnGuard {
++            std::shared_ptr<http::middleware::RateLimiter> limiter_;
++            std::string key_;
++            ~SseConnGuard() {
++                if (limiter_ && !key_.empty()) limiter_->releaseSseConnectionSlot(key_);
++            }
++        } guard{limiter, sseUserKey};
++
+         const std::string body = req.getBody();
+         int64_t convId = chatui_v2::json::extractInt64(body, "conversation_id", 0);
+         const std::string requestedModel = chatui_v2::json::extractString(body, "model");
+@@ -344,7 +446,23 @@ int main(int argc, char** argv)
+ 
+         if (!lastUserMsg.empty() && convId > 0)
+         {
+-            chatui_v2::dao::MessageDao::insert(convId, "user", lastUserMsg);
++            try
++            {
++                if (msgPublisher)
++                {
++                    msgPublisher->publish(chatui_v2::queue::MessageWriteEvent{
++                        genEventId(), convId, "user", lastUserMsg
++                    });
++                }
++                else
++                {
++                    chatui_v2::dao::MessageDao::insert(convId, "user", lastUserMsg);
++                }
++            }
++            catch (const std::exception&)
++            {
++                chatui_v2::dao::MessageDao::insert(convId, "user", lastUserMsg);
++            }
+         }
+ 
+         const std::string provider = inferProvider(requestedModel, aiConfig.defaultModel());
+@@ -399,7 +517,23 @@ int main(int argc, char** argv)
+ 
+         if (convId > 0 && !full.empty())
+         {
+-            chatui_v2::dao::MessageDao::insert(convId, "assistant", full);
++            try
++            {
++                if (msgPublisher)
++                {
++                    msgPublisher->publish(chatui_v2::queue::MessageWriteEvent{
++                        genEventId(), convId, "assistant", full
++                    });
++                }
++                else
++                {
++                    chatui_v2::dao::MessageDao::insert(convId, "assistant", full);
++                }
++            }
++            catch (const std::exception&)
++            {
++                chatui_v2::dao::MessageDao::insert(convId, "assistant", full);
++            }
+             chatui_v2::dao::ConversationDao::touch(convId);
+         }
+ 
+diff --git a/chat_ui_v2/dao/MessageDao.h b/chat_ui_v2/dao/MessageDao.h
+index f048541..c32c8a7 100644
+--- a/chat_ui_v2/dao/MessageDao.h
++++ b/chat_ui_v2/dao/MessageDao.h
+@@ -22,6 +22,21 @@ struct ChatMessage
+ class MessageDao
+ {
+ public:
++    static int64_t insertWithEventId(int64_t conversationId,
++                                     const std::string& role,
++                                     const std::string& content,
++                                     const std::string& eventId)
++    {
++        auto conn = http::db::DbConnectionPool::getInstance().getConnection();
++        int affected = conn->executeUpdate(
++            "INSERT IGNORE INTO messages (conversation_id, role, content, event_id) VALUES (?, ?, ?, ?)",
++            conversationId, role, content, eventId);
++        if (affected <= 0) return 0;
++        std::unique_ptr<sql::ResultSet> rs(conn->executeQuery("SELECT LAST_INSERT_ID() AS id"));
++        if (rs && rs->next()) return rs->getInt64("id");
++        return 0;
++    }
++
+     static int64_t insert(int64_t conversationId,
+                           const std::string& role,
+                           const std::string& content)
+diff --git a/chat_ui_v2/queue/RedisMessageQueue.h b/chat_ui_v2/queue/RedisMessageQueue.h
+new file mode 100644
+index 0000000..94996f5
+--- /dev/null
++++ b/chat_ui_v2/queue/RedisMessageQueue.h
+@@ -0,0 +1,180 @@
++#pragma once
++
++#include <atomic>
++#include <chrono>
++#include <memory>
++#include <string>
++#include <thread>
++#include <utility>
++#include <vector>
++
++#include <hiredis/hiredis.h>
++#include <muduo/base/Logging.h>
++#include <sw/redis++/redis++.h>
++
++#include "dao/MessageDao.h"
++
++namespace chatui_v2 {
++namespace queue {
++
++struct MessageWriteEvent {
++    std::string eventId;
++    int64_t conversationId = 0;
++    std::string role;
++    std::string content;
++};
++
++class RedisMessagePublisher {
++public:
++    RedisMessagePublisher(const std::string& redisUri, std::string streamKey)
++        : redis_(redisUri), streamKey_(std::move(streamKey)) {}
++
++    std::string publish(const MessageWriteEvent& e) {
++        std::vector<std::pair<std::string, std::string>> fields{
++            {"event_id", e.eventId},
++            {"conversation_id", std::to_string(e.conversationId)},
++            {"role", e.role},
++            {"content", e.content},
++            {"ts", std::to_string(nowMs())}
++        };
++        return redis_.xadd(streamKey_, "*", fields.begin(), fields.end());
++    }
++
++private:
++    static int64_t nowMs() {
++        auto now = std::chrono::system_clock::now().time_since_epoch();
++        return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
++    }
++
++private:
++    sw::redis::Redis redis_;
++    std::string streamKey_;
++};
++
++class RedisMessageConsumer {
++public:
++    RedisMessageConsumer(const std::string& redisUri,
++                         std::string streamKey,
++                         std::string group,
++                         std::string consumer,
++                         int blockMs = 2000,
++                         int batchCount = 64)
++        : redis_(redisUri)
++        , streamKey_(std::move(streamKey))
++        , group_(std::move(group))
++        , consumer_(std::move(consumer))
++        , blockMs_(blockMs)
++        , batchCount_(batchCount) {}
++
++    ~RedisMessageConsumer() { stop(); }
++
++    void start() {
++        if (running_.exchange(true)) return;
++        ensureGroup();
++        worker_ = std::thread([this]() { run(); });
++    }
++
++    void stop() {
++        if (!running_.exchange(false)) return;
++        if (worker_.joinable()) worker_.join();
++    }
++
++private:
++    void ensureGroup() {
++        try {
++            redis_.xgroup_create(streamKey_, group_, "0", true);
++            LOG_INFO << "[RedisMessageConsumer] created group: " << group_;
++        } catch (const std::exception& e) {
++            const std::string msg = e.what();
++            if (msg.find("BUSYGROUP") == std::string::npos) {
++                throw;
++            }
++        }
++    }
++
++    void run() {
++        while (running_) {
++            try {
++                // Drain pending entries owned by this consumer first.
++                consumeWithId("0", std::chrono::milliseconds(1));
++                // Then process new messages.
++                consumeWithId(">", std::chrono::milliseconds(blockMs_));
++            } catch (const std::exception& e) {
++                LOG_ERROR << "[RedisMessageConsumer] loop error: " << e.what();
++                std::this_thread::sleep_for(std::chrono::milliseconds(500));
++            }
++        }
++    }
++
++    void consumeWithId(const std::string& id, const std::chrono::milliseconds& timeout) {
++        auto reply = redis_.command(
++            "XREADGROUP",
++            "GROUP", group_, consumer_,
++            "COUNT", std::to_string(batchCount_),
++            "BLOCK", std::to_string(timeout.count()),
++            "STREAMS", streamKey_, id);
++        if (!reply) return;
++        auto* root = reply.get();
++        if (!root || root->type == REDIS_REPLY_NIL || root->elements == 0) return;
++        parseAndProcess(root);
++    }
++
++    void parseAndProcess(redisReply* root) {
++        // XREADGROUP reply:
++        // [ [ stream, [ [id, [field, value, ...]], ... ] ] ]
++        if (root->type != REDIS_REPLY_ARRAY) return;
++        for (size_t i = 0; i < root->elements; ++i) {
++            redisReply* streamArr = root->element[i];
++            if (!streamArr || streamArr->type != REDIS_REPLY_ARRAY || streamArr->elements < 2) continue;
++            redisReply* messagesArr = streamArr->element[1];
++            if (!messagesArr || messagesArr->type != REDIS_REPLY_ARRAY) continue;
++
++            for (size_t j = 0; j < messagesArr->elements; ++j) {
++                redisReply* msgArr = messagesArr->element[j];
++                if (!msgArr || msgArr->type != REDIS_REPLY_ARRAY || msgArr->elements < 2) continue;
++                redisReply* idReply = msgArr->element[0];
++                redisReply* fieldsReply = msgArr->element[1];
++                if (!idReply || idReply->type != REDIS_REPLY_STRING) continue;
++                if (!fieldsReply || fieldsReply->type != REDIS_REPLY_ARRAY) continue;
++
++                MessageWriteEvent ev;
++                for (size_t k = 0; k + 1 < fieldsReply->elements; k += 2) {
++                    auto* f = fieldsReply->element[k];
++                    auto* v = fieldsReply->element[k + 1];
++                    if (!f || !v || f->type != REDIS_REPLY_STRING || v->type != REDIS_REPLY_STRING) continue;
++                    const std::string field(f->str, f->len);
++                    const std::string value(v->str, v->len);
++                    if (field == "event_id") ev.eventId = value;
++                    else if (field == "conversation_id") {
++                        try { ev.conversationId = std::stoll(value); } catch (...) { ev.conversationId = 0; }
++                    } else if (field == "role") ev.role = value;
++                    else if (field == "content") ev.content = value;
++                }
++
++                bool ok = false;
++                if (!ev.eventId.empty() && ev.conversationId > 0 && !ev.role.empty()) {
++                    ok = chatui_v2::dao::MessageDao::insertWithEventId(
++                        ev.conversationId, ev.role, ev.content, ev.eventId) >= 0;
++                }
++
++                if (ok) {
++                    const std::string msgId(idReply->str, idReply->len);
++                    redis_.xack(streamKey_, group_, msgId);
++                }
++            }
++        }
++    }
++
++private:
++    sw::redis::Redis redis_;
++    std::string streamKey_;
++    std::string group_;
++    std::string consumer_;
++    int blockMs_ = 2000;
++    int batchCount_ = 64;
++    std::atomic<bool> running_{false};
++    std::thread worker_;
++};
++
++}  // namespace queue
++}  // namespace chatui_v2
+diff --git a/redis.patch b/redis.patch
+new file mode 100644
+index 0000000..7fbe418
+--- /dev/null
++++ b/redis.patch
+@@ -0,0 +1,275 @@
++diff --git a/chat_ui_v2/CMakeLists.txt b/chat_ui_v2/CMakeLists.txt
++index 1089f4f..be8012e 100644
++--- a/chat_ui_v2/CMakeLists.txt
+++++ b/chat_ui_v2/CMakeLists.txt
++@@ -5,12 +5,15 @@ set(CMAKE_CXX_STANDARD 17)
++ set(CMAKE_CXX_STANDARD_REQUIRED ON)
++ 
++ find_package(CURL REQUIRED)
+++find_package(PkgConfig REQUIRED)
+++pkg_check_modules(REDIS_PLUS_PLUS REQUIRED redis++)
++ 
++ set(HTTP_SERVER_ROOT "${CMAKE_SOURCE_DIR}/../HttpServer_v2")
++ 
++ include_directories(
++     ${HTTP_SERVER_ROOT}/include
++     ${CMAKE_SOURCE_DIR}
+++    ${REDIS_PLUS_PLUS_INCLUDE_DIRS}
++ )
++ 
++ file(GLOB_RECURSE HTTP_SERVER_SRCS
++@@ -30,6 +33,7 @@ target_link_libraries(chatui_v2_server
++     crypto
++     mysqlcppconn
++     CURL::libcurl
+++    ${REDIS_PLUS_PLUS_LIBRARIES}
++ )
++ 
++ add_custom_command(TARGET chatui_v2_server POST_BUILD
++diff --git a/chat_ui_v2/chat_main.cpp b/chat_ui_v2/chat_main.cpp
++index 1e652f3..76138da 100644
++--- a/chat_ui_v2/chat_main.cpp
+++++ b/chat_ui_v2/chat_main.cpp
++@@ -1,10 +1,13 @@
++ #include <algorithm>
++ #include <atomic>
+++#include <chrono>
++ #include <condition_variable>
++ #include <cstdlib>
++ #include <fstream>
+++#include <functional>
++ #include <memory>
++ #include <mutex>
+++#include <random>
++ #include <sstream>
++ #include <string>
++ #include <unordered_map>
++@@ -23,6 +26,9 @@
++ #include "http/HttpRequest.h"
++ #include "http/HttpResponse.h"
++ #include "http/HttpServer.h"
+++#include "middleware/rate_limit/RateLimitMiddleware.h"
+++#include "queue/RedisMessageQueue.h"
+++#include "session/RedisSessionStorage.h"
++ #include "session/SessionManager.h"
++ #include "session/SessionStorage.h"
++ #include "utils/db/DbConnectionPool.h"
++@@ -110,10 +116,13 @@ void ensureSchemaV2(const std::string& dbName)
++         conn->executeUpdate("ALTER TABLE conversations ADD COLUMN model VARCHAR(128) NOT NULL DEFAULT '' AFTER title");
++     if (!hasColumn(dbName, "conversations", "system_prompt"))
++         conn->executeUpdate("ALTER TABLE conversations ADD COLUMN system_prompt TEXT NULL AFTER model");
+++    if (!hasColumn(dbName, "messages", "event_id"))
+++        conn->executeUpdate("ALTER TABLE messages ADD COLUMN event_id VARCHAR(128) NULL AFTER content");
++ 
++     // 索引/约束幂等处理：已存在时报错则忽略
++     try { conn->executeUpdate("ALTER TABLE users ADD UNIQUE KEY uk_users_email (email)"); } catch (...) {}
++     try { conn->executeUpdate("ALTER TABLE users ADD UNIQUE KEY uk_users_username (username)"); } catch (...) {}
+++    try { conn->executeUpdate("ALTER TABLE messages ADD UNIQUE KEY uk_messages_event_id (event_id)"); } catch (...) {}
++ }
++ 
++ std::string env(const char* key, const std::string& def = "")
++@@ -122,6 +131,39 @@ std::string env(const char* key, const std::string& def = "")
++     return (v && v[0]) ? std::string(v) : def;
++ }
++ 
+++int envInt(const char* key, int def)
+++{
+++    const char* v = std::getenv(key);
+++    if (!v || !v[0]) return def;
+++    try { return std::stoi(v); } catch (...) { return def; }
+++}
+++
+++std::string buildRedisUri()
+++{
+++    const std::string host = env("REDIS_HOST", "127.0.0.1");
+++    const std::string port = env("REDIS_PORT", "6379");
+++    const std::string pass = env("REDIS_PASS", "");
+++    const std::string db = env("REDIS_DB", "0");
+++
+++    std::string uri = "tcp://";
+++    if (!pass.empty()) uri += ":" + pass + "@";
+++    uri += host + ":" + port;
+++    uri += "/" + db;
+++    return uri;
+++}
+++
+++std::string genEventId()
+++{
+++    static thread_local std::mt19937_64 rng{std::random_device{}()};
+++    std::uniform_int_distribution<unsigned long long> dist;
+++    auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+++                   std::chrono::system_clock::now().time_since_epoch())
+++                   .count();
+++    std::ostringstream oss;
+++    oss << now << "-" << std::hex << dist(rng);
+++    return oss.str();
+++}
+++
++ std::string inferProvider(const std::string& modelId,
++                           const std::string& fallbackProvider)
++ {
++@@ -201,11 +243,52 @@ int main(int argc, char** argv)
++     server.setThreadNum(4);
++     server.setWorkerThreads(4);
++ 
++-    auto storage = std::make_unique<http::session::MemorySessionStorage>();
+++    const std::string redisUri = buildRedisUri();
+++    const int sessionTtlSec = envInt("SESSION_TTL_SEC", 3600);
+++    std::unique_ptr<http::session::SessionStorage> storage;
+++    try
+++    {
+++        storage = std::make_unique<http::session::RedisSessionStorage>(redisUri, sessionTtlSec);
+++    }
+++    catch (const std::exception&)
+++    {
+++        storage = std::make_unique<http::session::MemorySessionStorage>();
+++    }
++     auto sm = std::make_unique<http::session::SessionManager>(std::move(storage));
++     auto* smPtr = sm.get();
++     server.setSessionManager(std::move(sm));
++ 
+++    http::middleware::RateLimitConfig rlCfg;
+++    rlCfg.loginPerMinute = envInt("LOGIN_RL_PER_MIN", 5);
+++    rlCfg.loginPer15Min = envInt("LOGIN_RL_PER_15MIN", 20);
+++    rlCfg.ssePerMinute = envInt("SSE_RL_PER_MIN", 30);
+++    rlCfg.sseBurst = envInt("SSE_RL_BURST", 10);
+++    rlCfg.sseConnLimit = envInt("SSE_CONN_LIMIT", 3);
+++    rlCfg.sseConnTtlSec = envInt("SSE_CONN_TTL_SEC", 3600);
+++    std::shared_ptr<http::middleware::RateLimiter> limiter;
+++    std::shared_ptr<chatui_v2::queue::RedisMessagePublisher> msgPublisher;
+++    std::unique_ptr<chatui_v2::queue::RedisMessageConsumer> msgConsumer;
+++
+++    const std::string streamKey = env("STREAM_KEY", "chat:msg:write");
+++    const std::string streamGroup = env("STREAM_GROUP", "msg-writers");
+++    const std::string streamConsumer = env("STREAM_CONSUMER", "writer-1");
+++    const int streamBlockMs = envInt("STREAM_BLOCK_MS", 2000);
+++    try
+++    {
+++        limiter = std::make_shared<http::middleware::RateLimiter>(redisUri, rlCfg);
+++        server.addMiddleware(std::make_shared<http::middleware::RateLimitMiddleware>(limiter));
+++        msgPublisher = std::make_shared<chatui_v2::queue::RedisMessagePublisher>(redisUri, streamKey);
+++        msgConsumer = std::make_unique<chatui_v2::queue::RedisMessageConsumer>(
+++            redisUri, streamKey, streamGroup, streamConsumer, streamBlockMs);
+++        msgConsumer->start();
+++    }
+++    catch (const std::exception&)
+++    {
+++        limiter.reset();
+++        msgPublisher.reset();
+++        msgConsumer.reset();
+++    }
+++
++     server.Get("/", [](const http::HttpRequest&, http::HttpResponse* resp) {
++         resp->setStatusCode(http::HttpResponse::k200Ok);
++         resp->setContentType("text/html; charset=utf-8");
++@@ -272,7 +355,7 @@ int main(int argc, char** argv)
++     server.addRoute(http::HttpRequest::kDelete, "/api/conversations/:id", convDetail);
++     server.addRoute(http::HttpRequest::kGet, "/api/conversations/:id/messages", msgHandler);
++ 
++-    server.Sse("/api/chat/sse", [smPtr, aiConfig](const http::HttpRequest& req, const sse::SseConnectionPtr& sse) {
+++    server.Sse("/api/chat/sse", [smPtr, aiConfig, limiter, msgPublisher](const http::HttpRequest& req, const sse::SseConnectionPtr& sse) {
++         if (!sse || !sse->connected()) return;
++ 
++         http::HttpResponse fakeResp(false);
++@@ -289,6 +372,25 @@ int main(int argc, char** argv)
++             return;
++         }
++ 
+++        const std::string sseUserKey = "u:" + std::to_string(userId);
+++        int connRetry = 0;
+++        if (limiter && !limiter->acquireSseConnectionSlot(sseUserKey, &connRetry))
+++        {
+++            sse->send(std::string("{\"type\":\"error\",\"message\":\"too many concurrent sse connections\",\"retry_after\":")
+++                      + std::to_string(std::max(1, connRetry)) + "}", "error");
+++            sse->send(R"({"type":"done"})", "done");
+++            sse->close();
+++            return;
+++        }
+++
+++        struct SseConnGuard {
+++            std::shared_ptr<http::middleware::RateLimiter> limiter_;
+++            std::string key_;
+++            ~SseConnGuard() {
+++                if (limiter_ && !key_.empty()) limiter_->releaseSseConnectionSlot(key_);
+++            }
+++        } guard{limiter, sseUserKey};
+++
++         const std::string body = req.getBody();
++         int64_t convId = chatui_v2::json::extractInt64(body, "conversation_id", 0);
++         const std::string requestedModel = chatui_v2::json::extractString(body, "model");
++@@ -344,7 +446,23 @@ int main(int argc, char** argv)
++ 
++         if (!lastUserMsg.empty() && convId > 0)
++         {
++-            chatui_v2::dao::MessageDao::insert(convId, "user", lastUserMsg);
+++            try
+++            {
+++                if (msgPublisher)
+++                {
+++                    msgPublisher->publish(chatui_v2::queue::MessageWriteEvent{
+++                        genEventId(), convId, "user", lastUserMsg
+++                    });
+++                }
+++                else
+++                {
+++                    chatui_v2::dao::MessageDao::insert(convId, "user", lastUserMsg);
+++                }
+++            }
+++            catch (const std::exception&)
+++            {
+++                chatui_v2::dao::MessageDao::insert(convId, "user", lastUserMsg);
+++            }
++         }
++ 
++         const std::string provider = inferProvider(requestedModel, aiConfig.defaultModel());
++@@ -399,7 +517,23 @@ int main(int argc, char** argv)
++ 
++         if (convId > 0 && !full.empty())
++         {
++-            chatui_v2::dao::MessageDao::insert(convId, "assistant", full);
+++            try
+++            {
+++                if (msgPublisher)
+++                {
+++                    msgPublisher->publish(chatui_v2::queue::MessageWriteEvent{
+++                        genEventId(), convId, "assistant", full
+++                    });
+++                }
+++                else
+++                {
+++                    chatui_v2::dao::MessageDao::insert(convId, "assistant", full);
+++                }
+++            }
+++            catch (const std::exception&)
+++            {
+++                chatui_v2::dao::MessageDao::insert(convId, "assistant", full);
+++            }
++             chatui_v2::dao::ConversationDao::touch(convId);
++         }
++ 
++diff --git a/chat_ui_v2/dao/MessageDao.h b/chat_ui_v2/dao/MessageDao.h
++index f048541..c32c8a7 100644
++--- a/chat_ui_v2/dao/MessageDao.h
+++++ b/chat_ui_v2/dao/MessageDao.h
++@@ -22,6 +22,21 @@ struct ChatMessage
++ class MessageDao
++ {
++ public:
+++    static int64_t insertWithEventId(int64_t conversationId,
+++                                     const std::string& role,
+++                                     const std::string& content,
+++                                     const std::string& eventId)
+++    {
+++        auto conn = http::db::DbConnectionPool::getInstance().getConnection();
+++        int affected = conn->executeUpdate(
+++            "INSERT IGNORE INTO messages (conversation_id, role, content, event_id) VALUES (?, ?, ?, ?)",
+++            conversationId, role, content, eventId);
+++        if (affected <= 0) return 0;
+++        std::unique_ptr<sql::ResultSet> rs(conn->executeQuery("SELECT LAST_INSERT_ID() AS id"));
+++        if (rs && rs->next()) return rs->getInt64("id");
+++        return 0;
+++    }
+++
++     static int64_t insert(int64_t conversationId,
++                           const std::string& role,
++                           const std::string& content)

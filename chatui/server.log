@@ -1,0 +1,97 @@
+===========================================
+  ChatUI v2 - Refactored Edition
+===========================================
+
+Configuration:
+  Port: 8088
+  Database: chat_app@127.0.0.1
+  Models Config: llm/models.json
+
+[ChatUI] Created
+[StorageManager] Created
+20260719 12:36:43.725391Z 101876 INFO  Database connection established - DbConnection.cpp:36
+20260719 12:36:43.746048Z 101876 INFO  Database connection established - DbConnection.cpp:36
+20260719 12:36:43.775395Z 101876 INFO  Database connection established - DbConnection.cpp:36
+20260719 12:36:43.796674Z 101876 INFO  Database connection established - DbConnection.cpp:36
+20260719 12:36:43.816835Z 101876 INFO  Database connection established - DbConnection.cpp:36
+20260719 12:36:43.833990Z 101876 INFO  Database connection established - DbConnection.cpp:36
+20260719 12:36:43.866182Z 101876 INFO  Database connection established - DbConnection.cpp:36
+20260719 12:36:43.889308Z 101876 INFO  Database connection established - DbConnection.cpp:36
+20260719 12:36:43.907876Z 101876 INFO  Database connection established - DbConnection.cpp:36
+20260719 12:36:43.927612Z 101876 INFO  Database connection established - DbConnection.cpp:36
+20260719 12:36:43.927648Z 101876 INFO  Database connection pool initialized with 10 connections - DbConnectionPool.cpp:36
+[StorageManager] Initialized with pool size: 10
+[StorageManager] Ensured users table
+[StorageManager] Ensured conversations table
+[StorageManager] Ensured messages table
+[StorageManager] Schema check complete
+[UserManager] Initialized
+[LLMManager] Initialized
+[LLMManager] Loaded model: qwen-plus (provider: qwen)
+[LLMManager] Loaded model: claude-sonnet (provider: claude)
+[LLMManager] Loaded model: doubao-pro (provider: doubao)
+[LLMManager] Loaded model: wenxin-speed (provider: wenxin)
+[LLMManager] Loaded model: local-qwen (provider: local)
+[LLMManager] Loaded 5 model(s) from llm/models.json
+[ChatUI] Routes registered
+[ChatUI] Initialized successfully on port 8088
+
+[Main] Application initialized successfully
+[Main] Server listening on http://localhost:8088
+[Main] Press Ctrl+C to stop
+
+[ChatUI] Starting server...
+20260719 12:36:43.957100Z 101876 WARN  HttpServer[ChatUI_v2] starts listening on0.0.0.0:8088 - HttpServer.cpp:50
+20260719 12:36:46.680775Z 101876 INFO  TcpServer::newConnection [ChatUI_v2] - new connection [ChatUI_v2-0.0.0.0:8088#1] from 127.0.0.1:46456 - TcpServer.cc:80
+20260719 12:36:46.681569Z 101876 INFO  Sending response:
+HTTP/1.1 200 OK
+Content-Length: 15
+Connection: Keep-Alive
+Content-Type: application/json
+
+{"status":"ok"} - HttpServer.cpp:243
+20260719 12:36:46.684151Z 101876 INFO  TcpServer::removeConnectionInLoop [ChatUI_v2] - connection ChatUI_v2-0.0.0.0:8088#1 - TcpServer.cc:109
+20260719 12:36:46.916847Z 101876 INFO  TcpServer::newConnection [ChatUI_v2] - new connection [ChatUI_v2-0.0.0.0:8088#2] from 127.0.0.1:46458 - TcpServer.cc:80
+20260719 12:36:46.917592Z 101876 INFO  Sending response:
+ - HttpServer.cpp:243
+20260719 12:36:46.919374Z 101876 INFO  TcpServer::removeConnectionInLoop [ChatUI_v2] - connection ChatUI_v2-0.0.0.0:8088#2 - TcpServer.cc:109
+20260719 12:36:49.730237Z 101876 INFO  TcpServer::newConnection [ChatUI_v2] - new connection [ChatUI_v2-0.0.0.0:8088#3] from 127.0.0.1:40076 - TcpServer.cc:80
+20260719 12:36:49.733991Z 101876 INFO  Sending response:
+ - HttpServer.cpp:243
+20260719 12:36:49.741183Z 101876 ERROR TcpConnection::handleError [ChatUI_v2-0.0.0.0:8088#3] - SO_ERROR = 104 Connection reset by peer - TcpConnection.cc:426
+20260719 12:36:49.741234Z 101876 INFO  TcpServer::removeConnectionInLoop [ChatUI_v2] - connection ChatUI_v2-0.0.0.0:8088#3 - TcpServer.cc:109
+20260719 12:38:03.480293Z 101876 INFO  TcpServer::newConnection [ChatUI_v2] - new connection [ChatUI_v2-0.0.0.0:8088#4] from 192.168.118.1:56486 - TcpServer.cc:80
+20260719 12:38:03.480886Z 101876 INFO  TcpServer::newConnection [ChatUI_v2] - new connection [ChatUI_v2-0.0.0.0:8088#5] from 192.168.118.1:62418 - TcpServer.cc:80
+20260719 12:38:03.481479Z 101876 INFO  Sending response:
+ - HttpServer.cpp:243
+20260719 12:38:03.905515Z 101876 INFO  Sending response:
+HTTP/1.1 401 Unauthorized
+Content-Length: 24
+Connection: Keep-Alive
+Content-Type: application/json
+
+{"error":"Unauthorized"} - HttpServer.cpp:243
+20260719 12:38:03.939706Z 101876 INFO  Sending response:
+HTTP/1.1 401 Unauthorized
+Content-Length: 24
+Connection: Keep-Alive
+Content-Type: application/json
+
+{"error":"Unauthorized"} - HttpServer.cpp:243
+20260719 12:38:03.940395Z 101876 INFO  请求的啥，url：1 /favicon.ico - HttpServer.cpp:265
+20260719 12:38:03.940408Z 101876 INFO  未找到路由，返回404 - HttpServer.cpp:266
+20260719 12:38:03.940424Z 101876 INFO  Sending response:
+HTTP/1.1 404 Not Found
+Connection: close
+
+ - HttpServer.cpp:243
+20260719 12:38:03.942230Z 101876 INFO  TcpServer::removeConnectionInLoop [ChatUI_v2] - connection ChatUI_v2-0.0.0.0:8088#5 - TcpServer.cc:109
+20260719 12:38:31.358288Z 101876 INFO  TcpServer::removeConnectionInLoop [ChatUI_v2] - connection ChatUI_v2-0.0.0.0:8088#4 - TcpServer.cc:109
+
+[Main] Caught signal 15, shutting down...
+[ChatUI] Shutting down...
+[LLMManager] Shutting down...
+[LLMManager] Shutdown complete
+[StorageManager] Shutdown complete
+[ChatUI] Shutdown complete
+20260719 12:43:57.344138Z 101876 INFO  Database connection pool destroyed - DbConnectionPool.cpp:52

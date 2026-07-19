@@ -5,12 +5,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(CURL REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(REDIS_PLUS_PLUS REQUIRED redis++)
 
 set(HTTP_SERVER_ROOT "${CMAKE_SOURCE_DIR}/../HttpServer_v2")
 
 include_directories(
     ${HTTP_SERVER_ROOT}/include
     ${CMAKE_SOURCE_DIR}
+    ${REDIS_PLUS_PLUS_INCLUDE_DIRS}
 )
 
 file(GLOB_RECURSE HTTP_SERVER_SRCS
@@ -19,6 +22,7 @@ file(GLOB_RECURSE HTTP_SERVER_SRCS
 
 add_executable(chatui_v2_server
     chat_main.cpp
+    ai/InferenceProxy.cpp
     ${HTTP_SERVER_SRCS}
 )
 
@@ -30,6 +34,7 @@ target_link_libraries(chatui_v2_server
     crypto
     mysqlcppconn
     CURL::libcurl
+    ${REDIS_PLUS_PLUS_LIBRARIES}
 )
 
 add_custom_command(TARGET chatui_v2_server POST_BUILD

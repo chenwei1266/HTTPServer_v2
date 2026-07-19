@@ -1,10 +1,11 @@
 #include <algorithm>
 #include <atomic>
-#include <condition_variable>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <memory>
-#include <mutex>
+#include <random>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -12,6 +13,7 @@
 
 #include "ai/AIConfig.h"
 #include "ai/AIFactory.h"
+#include "ai/InferenceProxy.h"
 #include "ai/ModelRegister.h"
 #include "api/ConversationHandlers.h"
 #include "api/MessageHandler.h"
@@ -23,9 +25,13 @@
 #include "http/HttpRequest.h"
 #include "http/HttpResponse.h"
 #include "http/HttpServer.h"
+#include "middleware/rate_limit/RateLimitMiddleware.h"
+#include "queue/RedisMessageQueue.h"
+#include "session/RedisSessionStorage.h"
 #include "session/SessionManager.h"
 #include "session/SessionStorage.h"
 #include "utils/db/DbConnectionPool.h"
+#include "utils/JsonUtil.h"
 #include "utils/MysqlUtil.h"
 
 namespace {
@@ -110,10 +116,13 @@ void ensureSchemaV2(const std::string& dbName)
         conn->executeUpdate("ALTER TABLE conversations ADD COLUMN model VARCHAR(128) NOT NULL DEFAULT '' AFTER title");
     if (!hasColumn(dbName, "conversations", "system_prompt"))
         conn->executeUpdate("ALTER TABLE conversations ADD COLUMN system_prompt TEXT NULL AFTER model");
+    if (!hasColumn(dbName, "messages", "event_id"))
+        conn->executeUpdate("ALTER TABLE messages ADD COLUMN event_id VARCHAR(128) NULL AFTER content");
 
     // 索引/约束幂等处理：已存在时报错则忽略
     try { conn->executeUpdate("ALTER TABLE users ADD UNIQUE KEY uk_users_email (email)"); } catch (...) {}
     try { conn->executeUpdate("ALTER TABLE users ADD UNIQUE KEY uk_users_username (username)"); } catch (...) {}
+    try { conn->executeUpdate("ALTER TABLE messages ADD UNIQUE KEY uk_messages_event_id (event_id)"); } catch (...) {}
 }
 
 std::string env(const char* key, const std::string& def = "")
@@ -122,29 +131,56 @@ std::string env(const char* key, const std::string& def = "")
     return (v && v[0]) ? std::string(v) : def;
 }
 
-std::string inferProvider(const std::string& modelId,
-                          const std::string& fallbackProvider)
+int envInt(const char* key, int def)
 {
-    std::string m = modelId;
-    std::transform(m.begin(), m.end(), m.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-
-    if (m.empty()) return fallbackProvider;
-    if (m.find("claude") != std::string::npos) return "claude";
-    if (m == "qwen3-coder-next") return "local";
-    if (m.find("qwen") != std::string::npos) return "qwen";
-    if (m.find("ernie") != std::string::npos || m.find("wenxin") != std::string::npos) return "wenxin";
-    if (m.find("doubao") != std::string::npos || m.find("ep-") == 0) return "doubao";
-
-    if (ai::AIFactory::instance().hasModel(modelId)) return modelId;
-    return fallbackProvider;
+    const char* v = std::getenv(key);
+    if (!v || !v[0]) return def;
+    try { return std::stoi(v); } catch (...) { return def; }
 }
 
-std::string sseJson(const std::string& type, const std::string& contentField, const std::string& content)
+std::string buildRedisUri()
 {
-    return std::string("{\"type\":\"") + type + "\",\"" + contentField + "\":\""
-         + chatui_v2::json::escape(content) + "\"}";
+    const std::string host = env("REDIS_HOST", "127.0.0.1");
+    const std::string port = env("REDIS_PORT", "6379");
+    const std::string pass = env("REDIS_PASS", "");
+    const std::string db = env("REDIS_DB", "0");
+
+    std::string uri = "tcp://";
+    if (!pass.empty()) uri += ":" + pass + "@";
+    uri += host + ":" + port;
+    uri += "/" + db;
+    return uri;
+}
+
+std::string genEventId()
+{
+    static thread_local std::mt19937_64 rng{std::random_device{}()};
+    std::uniform_int_distribution<unsigned long long> dist;
+    auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+                   .count();
+    std::ostringstream oss;
+    oss << now << "-" << std::hex << dist(rng);
+    return oss.str();
+}
+
+std::string buildInferRequestJson(const std::vector<ai::Message>& messages,
+                                  const std::string& model,
+                                  int maxTokens)
+{
+    json payload;
+    payload["stream"] = true;
+    if (!model.empty()) payload["model"] = model;
+    if (maxTokens > 0) payload["max_tokens"] = maxTokens;
+    payload["messages"] = json::array();
+    for (const auto& msg : messages)
+    {
+        payload["messages"].push_back({
+            {"role", msg.role},
+            {"content", msg.content},
+        });
+    }
+    return payload.dump();
 }
 
 std::string buildUserJson(const chatui_v2::dao::User& u)
@@ -201,10 +237,58 @@ int main(int argc, char** argv)
     server.setThreadNum(4);
     server.setWorkerThreads(4);
 
-    auto storage = std::make_unique<http::session::MemorySessionStorage>();
+    const std::string redisUri = buildRedisUri();
+    const int sessionTtlSec = envInt("SESSION_TTL_SEC", 3600);
+    std::unique_ptr<http::session::SessionStorage> storage;
+    try
+    {
+        storage = std::make_unique<http::session::RedisSessionStorage>(redisUri, sessionTtlSec);
+    }
+    catch (const std::exception&)
+    {
+        storage = std::make_unique<http::session::MemorySessionStorage>();
+    }
     auto sm = std::make_unique<http::session::SessionManager>(std::move(storage));
     auto* smPtr = sm.get();
     server.setSessionManager(std::move(sm));
+
+    http::middleware::RateLimitConfig rlCfg;
+    rlCfg.loginPerMinute = envInt("LOGIN_RL_PER_MIN", 5);
+    rlCfg.loginPer15Min = envInt("LOGIN_RL_PER_15MIN", 20);
+    rlCfg.ssePerMinute = envInt("SSE_RL_PER_MIN", 30);
+    rlCfg.sseBurst = envInt("SSE_RL_BURST", 10);
+    rlCfg.sseConnLimit = envInt("SSE_CONN_LIMIT", 3);
+    rlCfg.sseConnTtlSec = envInt("SSE_CONN_TTL_SEC", 3600);
+    std::shared_ptr<http::middleware::RateLimiter> limiter;
+    std::shared_ptr<chatui_v2::queue::RedisMessagePublisher> msgPublisher;
+    std::unique_ptr<chatui_v2::queue::RedisMessageConsumer> msgConsumer;
+
+    const std::string streamKey = env("STREAM_KEY", "chat:msg:write");
+    const std::string streamGroup = env("STREAM_GROUP", "msg-writers");
+    const std::string streamConsumer = env("STREAM_CONSUMER", "writer-1");
+    const int streamBlockMs = envInt("STREAM_BLOCK_MS", 2000);
+    try
+    {
+        limiter = std::make_shared<http::middleware::RateLimiter>(redisUri, rlCfg);
+        server.addMiddleware(std::make_shared<http::middleware::RateLimitMiddleware>(limiter));
+        msgPublisher = std::make_shared<chatui_v2::queue::RedisMessagePublisher>(redisUri, streamKey);
+        msgConsumer = std::make_unique<chatui_v2::queue::RedisMessageConsumer>(
+            redisUri, streamKey, streamGroup, streamConsumer, streamBlockMs);
+        msgConsumer->start();
+    }
+    catch (const std::exception&)
+    {
+        limiter.reset();
+        msgPublisher.reset();
+        msgConsumer.reset();
+    }
+
+    chatui_v2::ai_proxy::InferenceProxy::BackendTarget inferTarget;
+    inferTarget.host = env("INFER_HOST", "127.0.0.1");
+    inferTarget.port = static_cast<uint16_t>(envInt("INFER_PORT", 8002));
+    inferTarget.path = env("INFER_PATH", "/v1/chat/completions");
+    inferTarget.authToken = env("INFER_AUTH_TOKEN", "");
+    chatui_v2::ai_proxy::InferenceProxy inferenceProxy;
 
     server.Get("/", [](const http::HttpRequest&, http::HttpResponse* resp) {
         resp->setStatusCode(http::HttpResponse::k200Ok);
@@ -272,7 +356,7 @@ int main(int argc, char** argv)
     server.addRoute(http::HttpRequest::kDelete, "/api/conversations/:id", convDetail);
     server.addRoute(http::HttpRequest::kGet, "/api/conversations/:id/messages", msgHandler);
 
-    server.Sse("/api/chat/sse", [smPtr, aiConfig](const http::HttpRequest& req, const sse::SseConnectionPtr& sse) {
+    server.Sse("/api/chat/sse", [smPtr, limiter, msgPublisher, inferTarget, &inferenceProxy](const http::HttpRequest& req, const sse::SseConnectionPtr& sse) {
         if (!sse || !sse->connected()) return;
 
         http::HttpResponse fakeResp(false);
@@ -289,10 +373,26 @@ int main(int argc, char** argv)
             return;
         }
 
+        const std::string sseUserKey = "u:" + std::to_string(userId);
+        int connRetry = 0;
+        if (limiter && !limiter->acquireSseConnectionSlot(sseUserKey, &connRetry))
+        {
+            sse->send(std::string("{\"type\":\"error\",\"message\":\"too many concurrent sse connections\",\"retry_after\":")
+                      + std::to_string(std::max(1, connRetry)) + "}", "error");
+            sse->send(R"({"type":"done"})", "done");
+            sse->close();
+            return;
+        }
+        auto releaseConnSlot = [&]() {
+            if (limiter && !sseUserKey.empty()) limiter->releaseSseConnectionSlot(sseUserKey);
+        };
+
         const std::string body = req.getBody();
         int64_t convId = chatui_v2::json::extractInt64(body, "conversation_id", 0);
         const std::string requestedModel = chatui_v2::json::extractString(body, "model");
         const std::string systemPrompt = chatui_v2::json::extractString(body, "system_prompt");
+        int maxTokens = static_cast<int>(chatui_v2::json::extractInt64(body, "max_tokens", 2048));
+        if (maxTokens <= 0) maxTokens = 2048;
         auto msgPairs = chatui_v2::json::extractMessages(body);
 
         std::vector<ai::Message> messages;
@@ -308,6 +408,7 @@ int main(int argc, char** argv)
             sse->send(R"({"type":"error","message":"messages required"})", "error");
             sse->send(R"({"type":"done"})", "done");
             sse->close();
+            releaseConnSlot();
             return;
         }
 
@@ -344,66 +445,107 @@ int main(int argc, char** argv)
 
         if (!lastUserMsg.empty() && convId > 0)
         {
-            chatui_v2::dao::MessageDao::insert(convId, "user", lastUserMsg);
+            try
+            {
+                if (msgPublisher)
+                {
+                    msgPublisher->publish(chatui_v2::queue::MessageWriteEvent{
+                        genEventId(), convId, "user", lastUserMsg
+                    });
+                }
+                else
+                {
+                    chatui_v2::dao::MessageDao::insert(convId, "user", lastUserMsg);
+                }
+            }
+            catch (const std::exception&)
+            {
+                chatui_v2::dao::MessageDao::insert(convId, "user", lastUserMsg);
+            }
         }
 
-        const std::string provider = inferProvider(requestedModel, aiConfig.defaultModel());
-        ai::ModelConfig cfg = aiConfig.getConfig(provider);
-        if (cfg.model.empty()) cfg.model = requestedModel;
-        auto strategy = ai::AIFactory::instance().tryCreateModel(provider, cfg);
-        if (!strategy)
-        {
-            sse->send(R"({"type":"error","message":"unknown model"})", "error");
-            sse->send(R"({"type":"done"})", "done");
-            sse->close();
-            return;
-        }
+        sse->send(std::string("{\"type\":\"meta\",\"provider\":\"inference-proxy\",\"model\":\"")
+                  + chatui_v2::json::escape(requestedModel) + "\"}", "meta");
 
-        auto strategyPtr = std::shared_ptr<ai::AIStrategy>(std::move(strategy));
-        sse->send(std::string("{\"type\":\"meta\",\"provider\":\"")
-                  + chatui_v2::json::escape(strategyPtr->getProviderName())
-                  + "\",\"model\":\"" + chatui_v2::json::escape(strategyPtr->getModelName()) + "\"}", "meta");
+        struct StreamState {
+            std::shared_ptr<http::middleware::RateLimiter> limiter;
+            std::string limiterKey;
+            std::atomic<bool> slotReleased { false };
+            std::atomic<bool> doneSent { false };
+            int64_t conversationId { 0 };
+            std::string full;
+            sse::SseConnectionPtr sseConn;
+            std::shared_ptr<chatui_v2::queue::RedisMessagePublisher> publisher;
+        };
+        auto state = std::make_shared<StreamState>();
+        state->limiter = limiter;
+        state->limiterKey = sseUserKey;
+        state->conversationId = convId;
+        state->sseConn = sse;
+        state->publisher = msgPublisher;
 
-        std::mutex mu;
-        std::condition_variable cv;
-        bool done = false;
-        std::string full;
-
-        auto finish = [&](const std::string& maybeErr) {
+        auto finalize = [state]() {
+            if (!state->doneSent.exchange(true))
             {
-                std::lock_guard<std::mutex> lk(mu);
-                if (!done) done = true;
+                if (state->conversationId > 0 && !state->full.empty())
+                {
+                    try
+                    {
+                        if (state->publisher)
+                        {
+                            state->publisher->publish(chatui_v2::queue::MessageWriteEvent{
+                                genEventId(), state->conversationId, "assistant", state->full
+                            });
+                        }
+                        else
+                        {
+                            chatui_v2::dao::MessageDao::insert(state->conversationId, "assistant", state->full);
+                        }
+                    }
+                    catch (const std::exception&)
+                    {
+                        chatui_v2::dao::MessageDao::insert(state->conversationId, "assistant", state->full);
+                    }
+                    chatui_v2::dao::ConversationDao::touch(state->conversationId);
+                }
+
+                if (state->sseConn && state->sseConn->connected())
+                    state->sseConn->send(R"({"type":"done"})", "done");
+                if (state->sseConn)
+                    state->sseConn->close();
             }
-            cv.notify_one();
-            if (!maybeErr.empty())
+            if (state->limiter && !state->limiterKey.empty() && !state->slotReleased.exchange(true))
             {
-                sse->send(std::string("{\"type\":\"error\",\"message\":\"") + chatui_v2::json::escape(maybeErr) + "\"}", "error");
+                state->limiter->releaseSseConnectionSlot(state->limiterKey);
             }
-            sse->send(R"({"type":"done"})", "done");
         };
 
-        strategyPtr->sendStreamMsg(
-            messages,
-            [&](const std::string& token) {
-                if (!sse->connected()) return;
-                full += token;
-                sse->send(std::string("{\"type\":\"token\",\"content\":\"") + chatui_v2::json::escape(token) + "\"}");
-            },
-            [&]() { finish(""); },
-            [&](const std::string& err) { finish(err); });
+        chatui_v2::ai_proxy::InferenceProxy::StreamRequest streamReq;
+        streamReq.target = inferTarget;
+        streamReq.bodyJson = buildInferRequestJson(messages, requestedModel, maxTokens);
+        streamReq.onToken = [state](const std::string& token) {
+            if (!state->sseConn || !state->sseConn->connected())
+            {
+                return;
+            }
+            state->full += token;
+            state->sseConn->send(std::string("{\"type\":\"token\",\"content\":\"") + chatui_v2::json::escape(token) + "\"}");
+        };
+        streamReq.onError = [state](const std::string& err) {
+            if (!state->sseConn || !state->sseConn->connected()) return;
+            state->sseConn->send(std::string("{\"type\":\"error\",\"message\":\"") + chatui_v2::json::escape(err) + "\"}", "error");
+        };
+        streamReq.onDone = [finalize]() {
+            finalize();
+        };
 
+        const std::string streamId = inferenceProxy.start(sse, std::move(streamReq));
+        if (streamId.empty())
         {
-            std::unique_lock<std::mutex> lk(mu);
-            cv.wait(lk, [&]() { return done; });
+            if (sse->connected())
+                sse->send(R"({"type":"error","message":"failed to start backend stream"})", "error");
+            finalize();
         }
-
-        if (convId > 0 && !full.empty())
-        {
-            chatui_v2::dao::MessageDao::insert(convId, "assistant", full);
-            chatui_v2::dao::ConversationDao::touch(convId);
-        }
-
-        sse->close();
     });
 
     server.Ws("/api/chat/ws",

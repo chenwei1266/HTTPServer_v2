@@ -22,6 +22,21 @@ struct ChatMessage
 class MessageDao
 {
 public:
+    static int64_t insertWithEventId(int64_t conversationId,
+                                     const std::string& role,
+                                     const std::string& content,
+                                     const std::string& eventId)
+    {
+        auto conn = http::db::DbConnectionPool::getInstance().getConnection();
+        int affected = conn->executeUpdate(
+            "INSERT IGNORE INTO messages (conversation_id, role, content, event_id) VALUES (?, ?, ?, ?)",
+            conversationId, role, content, eventId);
+        if (affected <= 0) return 0;
+        std::unique_ptr<sql::ResultSet> rs(conn->executeQuery("SELECT LAST_INSERT_ID() AS id"));
+        if (rs && rs->next()) return rs->getInt64("id");
+        return 0;
+    }
+
     static int64_t insert(int64_t conversationId,
                           const std::string& role,
                           const std::string& content)

@@ -28,4 +28,9 @@ bool SseConnection::connected() const
     return conn_ && conn_->connected();
 }
 
+const muduo::net::TcpConnectionPtr& SseConnection::tcpConnection() const
+{
+    return conn_;
+}
+
 } // namespace sse

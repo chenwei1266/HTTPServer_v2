@@ -17,6 +17,7 @@ public:
     void send(const std::string& data, const std::string& event = "");
     void close();
     bool connected() const;
+    const muduo::net::TcpConnectionPtr& tcpConnection() const;
 
 private:
     muduo::net::TcpConnectionPtr conn_;

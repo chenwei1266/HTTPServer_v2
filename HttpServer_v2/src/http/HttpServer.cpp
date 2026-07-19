@@ -217,7 +217,7 @@ void HttpServer::onRequest(const muduo::net::TcpConnectionPtr &conn, const HttpR
         conn->send("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n");
         auto sseConn = std::make_shared<sse::SseConnection>(conn);
         auto handler = sseIt->second;
-        dispatch([handler, sseConn, mutableReq]() { handler(mutableReq, sseConn); });
+        handler(mutableReq, sseConn);
         return;
     }
 
